@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 
 struct AppVolume: Identifiable {
-    let id: String // We'll use the app's bundle identifier or PID
+    let id: String // Bundle Identifier
+    let pid: pid_t // Process ID used by CoreAudio
     let name: String
     let icon: NSImage
     var volume: Double
@@ -36,7 +37,7 @@ class AppManager: ObservableObject {
                   let icon = app.icon else { continue }
 
             let existingVolume = existingApps.first(where: { $0.id == bundleIdentifier })?.volume ?? 1.0
-            newApps.append(AppVolume(id: bundleIdentifier, name: name, icon: icon, volume: existingVolume))
+            newApps.append(AppVolume(id: bundleIdentifier, pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
         }
 
         return newApps.sorted(by: { $0.name < $1.name })
@@ -162,6 +163,9 @@ struct AppVolumeRow: View {
 
                 Slider(value: $app.volume, in: 0...1)
                     .tint(.gray)
+                    .onChange(of: app.volume) { newValue in
+                        AudioEngine.setVolume(forAppPID: app.pid, volume: Float(newValue))
+                    }
             }
         }
     }

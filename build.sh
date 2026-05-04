@@ -13,11 +13,8 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
-# Copy driver to bundle
-cp -R Resources/* "$RESOURCES_DIR/"
-
 echo "Compiling Swift files..."
-swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/AudioEngine.swift Sources/VolumeControlView.swift -target arm64-apple-macos13.0
+swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift -target arm64-apple-macos13.0
 
 # Check if compile succeeded
 if [ $? -ne 0 ]; then

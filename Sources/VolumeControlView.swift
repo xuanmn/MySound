@@ -163,9 +163,6 @@ struct AppVolumeRow: View {
 
                 Slider(value: $app.volume, in: 0...1)
                     .tint(.gray)
-                    .onChange(of: app.volume) { newValue in
-                        AudioEngine.setVolume(forAppPID: app.pid, volume: Float(newValue))
-                    }
             }
         }
     }

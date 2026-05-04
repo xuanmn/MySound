@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import AppKit
 
 /// This class acts as the bridge between our Swift UI and the BackgroundMusic C++ Audio Driver.
 class AudioEngine {
@@ -35,6 +36,32 @@ class AudioEngine {
         }
     }
 
+    /// Launches the Background Music daemon app bundled in our resources.
+    static func launchDaemonIfNeeded() {
+        let runningApps = NSWorkspace.shared.runningApplications
+        if runningApps.contains(where: { $0.bundleIdentifier == "com.bearisdriving.BGM.App" }) {
+            print("Daemon is already running.")
+            return
+        }
+
+        guard let daemonURL = Bundle.main.url(forResource: "Background Music", withExtension: "app") else {
+            print("Failed to find Background Music daemon in bundle.")
+            return
+        }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.addsToRecentItems = false
+        config.hides = true
+
+        NSWorkspace.shared.openApplication(at: daemonURL, configuration: config) { app, error in
+            if let error = error {
+                print("Failed to launch daemon: \(error)")
+            } else {
+                print("Successfully launched background audio daemon!")
+            }
+        }
+    }
+
     /// Finds the "Background Music" virtual audio device installed by the driver.
     static func getBackgroundMusicDeviceID() -> AudioDeviceID? {
         var propertyAddress = AudioObjectPropertyAddress(
@@ -63,7 +90,64 @@ class AudioEngine {
         return nil
     }
 
-    /// Changes the volume of a specific running application using its Process ID (PID).
+    /// Sets "Background Music" as the default system output device so it can intercept audio.
+    static func setAsDefaultOutputDevice() {
+        guard let bgmDeviceID = getBackgroundMusicDeviceID() else {
+            print("Background Music device not found. Cannot set as default.")
+            return
+        }
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var deviceID = bgmDeviceID
+        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            size,
+            &deviceID
+        )
+
+        if status == noErr {
+            print("Successfully set Background Music as default output device.")
+        } else {
+            print("Failed to set default output device. Error: \(status)")
+        }
+    }
+
+    // Expose the C function from libproc to get child processes
+    @_silgen_name("proc_listchildpids")
+    private static func proc_listchildpids(_ pid: pid_t, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
+
+    private static func getChildPIDs(of pid: pid_t) -> [pid_t] {
+        let maxPIDs = 1024
+        var pids = [pid_t](repeating: 0, count: maxPIDs)
+        let bytes = proc_listchildpids(pid, &pids, Int32(maxPIDs * MemoryLayout<pid_t>.stride))
+        let count = Int(bytes) / MemoryLayout<pid_t>.stride
+        if count > 0 {
+            return Array(pids[0..<count])
+        }
+        return []
+    }
+
+    private static func getAllDescendantPIDs(of pid: pid_t) -> [pid_t] {
+        var descendants = [pid_t]()
+        let children = getChildPIDs(of: pid)
+        descendants.append(contentsOf: children)
+        for child in children {
+            descendants.append(contentsOf: getAllDescendantPIDs(of: child))
+        }
+        return descendants
+    }
+
+    /// Changes the volume of a specific running application using its Process ID (PID), including all child helper processes.
     static func setVolume(forAppPID pid: pid_t, volume: Float) {
         guard let bgmDeviceID = getBackgroundMusicDeviceID() else {
             print("Background Music device not found. Make sure it is installed and running.")
@@ -71,8 +155,6 @@ class AudioEngine {
         }
 
         // 'vApp' is the secret custom property defined by the BackgroundMusic C++ driver
-        // to handle per-application volumes.
-        // In CoreAudio, 'vApp' translates to the integer 1986097264
         let bgmAppVolumePropertySelector: AudioObjectPropertySelector = 1986097264
 
         var address = AudioObjectPropertyAddress(
@@ -81,28 +163,23 @@ class AudioEngine {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        // We pass the application's PID as the "qualifier" to tell the driver WHICH app to change
-        var targetPID = pid
-        let qualifierDataSize = UInt32(MemoryLayout<pid_t>.size)
+        let allPIDs = [pid] + getAllDescendantPIDs(of: pid)
 
-        // We pass the volume (0.0 to 1.0) as the "data"
-        var targetVolume = Float32(volume)
-        let dataSize = UInt32(MemoryLayout<Float32>.size)
+        for targetPID in allPIDs {
+            var tempPID = targetPID
+            let qualifierDataSize = UInt32(MemoryLayout<pid_t>.size)
 
-        // Send the command directly into the macOS CoreAudio framework!
-        let status = AudioObjectSetPropertyData(
-            bgmDeviceID,
-            &address,
-            qualifierDataSize,
-            &targetPID,
-            dataSize,
-            &targetVolume
-        )
+            var targetVolume = Float32(volume)
+            let dataSize = UInt32(MemoryLayout<Float32>.size)
 
-        if status != noErr {
-            print("Failed to set volume for PID \(pid). CoreAudio Error: \(status)")
-        } else {
-            print("Successfully set PID \(pid) to volume \(volume)")
+            AudioObjectSetPropertyData(
+                bgmDeviceID,
+                &address,
+                qualifierDataSize,
+                &tempPID,
+                dataSize,
+                &targetVolume
+            )
         }
     }
 

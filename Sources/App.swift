@@ -4,6 +4,11 @@ import SwiftUI
 struct MySoundApp: App {
     init() {
         AudioEngine.installDriverIfNeeded()
+        
+        // Launch the hidden background daemon to handle audio routing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            AudioEngine.launchDaemonIfNeeded()
+        }
     }
     
     var body: some Scene {

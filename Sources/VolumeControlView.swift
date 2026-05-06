@@ -127,9 +127,10 @@ struct VolumeControlView: View {
             }
             .onAppear {
                 tapManager.onAudioBuffer = { pid, buffer in
-                    engineManager.processBuffer(pid: pid, sampleBuffer: buffer)
+                    engineManager.processBuffer(pid: pid, bufferList: buffer)
                 }
             }
+
 
             Divider()
 
@@ -170,11 +171,11 @@ struct AppVolumeRow: View {
         VStack(spacing: 6) {
             HStack {
                 // App Icon
-                Image(systemName: "app.dashed") // Temporarily use system icon
+                Image(nsImage: app.icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 24, height: 24)
-                    .foregroundColor(.secondary)
+
 
                 Text(app.name)
                     .font(.subheadline)

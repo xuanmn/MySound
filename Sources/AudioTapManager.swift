@@ -1,68 +1,87 @@
-@preconcurrency import ScreenCaptureKit
 import Foundation
 import AVFoundation
+import CoreAudio
+
+// Declare private Core Audio functions
+@_silgen_name("AudioHardwareCreateProcessTap")
+func AudioHardwareCreateProcessTap(_ description: CATapDescription, _ tapID: UnsafeMutablePointer<AudioObjectID>) -> OSStatus
+
+@_silgen_name("AudioHardwareDestroyProcessTap")
+func AudioHardwareDestroyProcessTap(_ tapID: AudioObjectID) -> OSStatus
+
+@_silgen_name("AudioDeviceCreateIOProcIDWithBlock")
+func AudioDeviceCreateIOProcIDWithBlock(_ inDevice: AudioObjectID, _ inClientPID: pid_t?, _ outProcID: UnsafeMutablePointer<AudioDeviceIOProcID?>, _ inBlock: @escaping AudioDeviceIOBlock) -> OSStatus
+
+@_silgen_name("AudioDeviceStart")
+func AudioDeviceStart(_ inDevice: AudioObjectID, _ inProcID: AudioDeviceIOProcID?) -> OSStatus
+
+@_silgen_name("AudioDeviceStop")
+func AudioDeviceStop(_ inDevice: AudioObjectID, _ inProcID: AudioDeviceIOProcID?) -> OSStatus
+
+typealias AudioDeviceIOBlock = (UnsafePointer<AudioTimeStamp>, UnsafePointer<AudioBufferList>, UnsafePointer<AudioTimeStamp>, UnsafeMutablePointer<AudioBufferList>, UnsafePointer<AudioTimeStamp>) -> Void
 
 @MainActor
-class AudioTapManager: NSObject, ObservableObject, SCStreamOutput {
-    @Published var activeStreams: [pid_t: SCStream] = [:]
+class AudioTapManager: NSObject, ObservableObject {
+    @Published var activeTaps: [pid_t: AudioObjectID] = [:]
+    private var ioProcs: [pid_t: AudioDeviceIOProcID] = [:]
     
     // Callback for when we receive audio data
-    var onAudioBuffer: ((pid_t, CMSampleBuffer) -> Void)?
+    var onAudioBuffer: ((pid_t, UnsafePointer<AudioBufferList>) -> Void)?
     
     func createTap(for pid: pid_t) {
-        if activeStreams[pid] != nil { return }
+        if activeTaps[pid] != nil { return }
         
-        Task {
-            do {
-                let content = try await SCShareableContent.current
-                guard let app = content.applications.first(where: { $0.processID == pid }) else {
-                    print("ERROR: Could not find SCShareableContent application for PID \(pid)")
-                    return
-                }
-                
-                guard let display = content.displays.first else {
-                    print("ERROR: No displays found in SCShareableContent. Check permissions.")
-                    return
-                }
-                
-                let filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
-                
-                let config = SCStreamConfiguration()
-                config.capturesAudio = true
-                config.excludesCurrentProcessAudio = true
-                
-                let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .main)
-                
-                try await stream.startCapture()
-                
-                DispatchQueue.main.async {
-                    self.activeStreams[pid] = stream
-                    print("SUCCESS: Started SCStream for PID \(pid)")
-                }
-            } catch {
-                print("ERROR: Failed to start SCStream for PID \(pid): \(error)")
-            }
+        let description = CATapDescription(stereoMixdownOfProcesses: [pid])
+        description.uuid = UUID()
+        description.muteBehavior = .mutedWhenTapped
+        description.isPrivate = true
+        
+        var tapID: AudioObjectID = 0
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
+        
+        if status == noErr {
+            activeTaps[pid] = tapID
+            print("SUCCESS: Created Process Tap for PID \(pid), TapID: \(tapID)")
+            
+            setupIOProc(for: pid, tapID: tapID)
+        } else {
+            print("ERROR: Failed to create process tap for PID \(pid): \(status)")
+        }
+    }
+    
+    private func setupIOProc(for pid: pid_t, tapID: AudioObjectID) {
+        var procID: AudioDeviceIOProcID?
+        
+        let status = AudioDeviceCreateIOProcIDWithBlock(&procID, tapID, nil) { [weak self] (now, inputData, inputTime, outputData, outputTime) in
+            // This is called on a real-time thread
+            self?.onAudioBuffer?(pid, inputData)
+        }
+        
+        if status == noErr, let proc = procID {
+            ioProcs[pid] = proc
+            AudioDeviceStart(tapID, proc)
+            print("SUCCESS: Started IO Proc for PID \(pid)")
+        } else {
+            print("ERROR: Failed to create IO Proc for PID \(pid): \(status)")
         }
     }
     
     func removeTap(for pid: pid_t) {
-        guard let stream = activeStreams[pid] else { return }
-        stream.stopCapture()
-        activeStreams.removeValue(forKey: pid)
-        print("Stopped SCStream for PID \(pid)")
-    }
-    
-    // SCStreamOutput delegate
-    nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
+        guard let tapID = activeTaps[pid] else { return }
         
-        // Use Task to get back to MainActor to access activeStreams
-        Task { @MainActor in
-            // Find which PID this stream belongs to
-            if let pid = activeStreams.first(where: { $0.value === stream })?.key {
-                onAudioBuffer?(pid, sampleBuffer)
-            }
+        if let proc = ioProcs[pid] {
+            AudioDeviceStop(tapID, proc)
+            ioProcs.removeValue(forKey: pid)
+        }
+        
+        let status = AudioHardwareDestroyProcessTap(tapID)
+        if status == noErr {
+            activeTaps.removeValue(forKey: pid)
+            print("SUCCESS: Destroyed Process Tap for PID \(pid)")
+        } else {
+            print("ERROR: Failed to destroy process tap for PID \(pid): \(status)")
         }
     }
 }
+
+

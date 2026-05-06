@@ -1,10 +1,14 @@
 import AVFoundation
-import ScreenCaptureKit
+import CoreAudio
 
 class AudioEngineManager: ObservableObject {
     private let engine = AVAudioEngine()
     private var playerNodes: [pid_t: AVAudioPlayerNode] = [:]
     private var mixerNodes: [pid_t: AVAudioMixerNode] = [:]
+    
+    // Default format for taps (stereo, 48kHz, float32)
+    // In a production app, you might want to query the tap's actual format
+    private let tapFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
     
     init() {
         startEngine()
@@ -20,8 +24,8 @@ class AudioEngineManager: ObservableObject {
         engine.attach(mixer)
         
         // Connect: Player -> Mixer -> MainMixer
-        engine.connect(player, to: mixer, format: nil)
-        engine.connect(mixer, to: engine.mainMixerNode, format: nil)
+        engine.connect(player, to: mixer, format: tapFormat)
+        engine.connect(mixer, to: engine.mainMixerNode, format: tapFormat)
         
         playerNodes[pid] = player
         mixerNodes[pid] = mixer
@@ -29,14 +33,36 @@ class AudioEngineManager: ObservableObject {
         player.play()
     }
     
-    func processBuffer(pid: pid_t, sampleBuffer: CMSampleBuffer) {
+    func processBuffer(pid: pid_t, bufferList: UnsafePointer<AudioBufferList>) {
         guard let player = playerNodes[pid] else {
-            setupPlayer(for: pid)
+            DispatchQueue.main.async {
+                self.setupPlayer(for: pid)
+            }
             return
         }
         
-        // Convert CMSampleBuffer to AVAudioPCMBuffer
-        guard let pcmBuffer = pcmBufferFrom(sampleBuffer: sampleBuffer) else { return }
+        // Convert AudioBufferList to AVAudioPCMBuffer
+        // The tap usually provides 512 or 1024 frames
+        let frameCount = bufferList.pointee.mBuffers.mDataByteSize / UInt32(MemoryLayout<Float>.size * 2)
+        guard frameCount > 0 else { return }
+        
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: tapFormat, frameCapacity: frameCount) else { return }
+        pcmBuffer.frameLength = frameCount
+        
+        // Copy data from bufferList to pcmBuffer
+        let abl = bufferList.pointee
+        if let dest = pcmBuffer.floatChannelData {
+            let mBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+            for i in 0..<Int(tapFormat.channelCount) {
+                if i < mBuffers.count {
+                    let src = mBuffers[i].mData
+                    let size = Int(mBuffers[i].mDataByteSize)
+                    if let src = src {
+                        dest[i].assign(from: src.assumingMemoryBound(to: Float.self), count: size / MemoryLayout<Float>.size)
+                    }
+                }
+            }
+        }
         
         // Schedule the buffer for playback
         player.scheduleBuffer(pcmBuffer, at: nil, options: .interrupts, completionHandler: nil)
@@ -57,30 +83,5 @@ class AudioEngineManager: ObservableObject {
             print("ERROR: Could not start audio engine: \(error)")
         }
     }
-    
-    private func pcmBufferFrom(sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
-            return nil
-        }
-        let audioFormat = AVAudioFormat(cmAudioFormatDescription: formatDescription)
-        
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
-            return nil
-        }
-        
-        let count = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(count)) else {
-            return nil
-        }
-        
-        pcmBuffer.frameLength = AVAudioFrameCount(count)
-        
-        guard let destination = pcmBuffer.audioBufferList.pointee.mBuffers.mData else {
-            return nil
-        }
-        
-        let status = CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: CMBlockBufferGetDataLength(blockBuffer), destination: destination)
-        
-        return status == noErr ? pcmBuffer : nil
-    }
 }
+

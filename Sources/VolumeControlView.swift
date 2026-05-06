@@ -49,6 +49,7 @@ struct VolumeControlView: View {
 
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
+    @StateObject private var tapManager = AudioTapManager()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -99,6 +100,21 @@ struct VolumeControlView: View {
             .onAppear {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
+                
+                // Initialize taps for all running apps
+                for app in newApps {
+                    tapManager.createTap(for: app.pid)
+                }
+            }
+            .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
+                // Handle new apps
+                for pid in newPids where !oldPids.contains(pid) {
+                    tapManager.createTap(for: pid)
+                }
+                // Handle terminated apps
+                for pid in oldPids where !newPids.contains(pid) {
+                    tapManager.removeTap(for: pid)
+                }
             }
 
             Divider()

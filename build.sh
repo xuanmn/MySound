@@ -14,7 +14,7 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 echo "Compiling Swift files..."
-swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift -target arm64-apple-macos13.0
+swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift -target arm64-apple-macos14.2
 
 # Check if compile succeeded
 if [ $? -ne 0 ]; then
@@ -41,7 +41,7 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.2</string>
 </dict>
 </plist>
 EOF

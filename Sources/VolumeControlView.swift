@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
+import CoreAudio
 
 struct AppVolume: Identifiable {
-    let id: String // Bundle Identifier
-    let pid: pid_t // Process ID used by CoreAudio
+    var id: Int32 { pid } // Use PID as unique ID
+    let bundleId: String
+    let pid: pid_t
     let name: String
     let icon: NSImage
     var volume: Double
@@ -36,8 +38,8 @@ class AppManager: ObservableObject {
                   let name = app.localizedName,
                   let icon = app.icon else { continue }
 
-            let existingVolume = existingApps.first(where: { $0.id == bundleIdentifier })?.volume ?? 1.0
-            newApps.append(AppVolume(id: bundleIdentifier, pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
+            let existingVolume = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume ?? 1.0
+            newApps.append(AppVolume(bundleId: bundleIdentifier, pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
         }
 
         return newApps.sorted(by: { $0.name < $1.name })
@@ -50,6 +52,7 @@ struct VolumeControlView: View {
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
     @StateObject private var tapManager = AudioTapManager()
+    @StateObject private var engineManager = AudioEngineManager()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,19 +87,25 @@ struct VolumeControlView: View {
             Divider()
 
             // App Volumes
-            VStack(spacing: 20) {
+            VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
                     Text("No apps running")
                         .foregroundColor(.secondary)
                         .padding()
                 } else {
-                    // Iterate through our live list of apps
-                    ForEach($appManager.apps) { $app in
-                        AppVolumeRow(app: $app)
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            ForEach($appManager.apps) { $app in
+                                AppVolumeRow(app: $app) { newVolume in
+                                    engineManager.setVolume(for: app.pid, volume: newVolume)
+                                }
+                            }
+                        }
+                        .padding()
                     }
                 }
             }
-            .padding()
+            .frame(width: 320, height: 400)
             .onAppear {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
@@ -114,6 +123,11 @@ struct VolumeControlView: View {
                 // Handle terminated apps
                 for pid in oldPids where !newPids.contains(pid) {
                     tapManager.removeTap(for: pid)
+                }
+            }
+            .onAppear {
+                tapManager.onAudioBuffer = { pid, buffer in
+                    engineManager.processBuffer(pid: pid, sampleBuffer: buffer)
                 }
             }
 
@@ -150,16 +164,17 @@ struct VolumeControlView: View {
 
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
+    var onVolumeChange: (Float) -> Void
 
     var body: some View {
         VStack(spacing: 6) {
             HStack {
-                // Use the actual app icon instead of a generic SF Symbol
-                Image(nsImage: app.icon)
+                // App Icon
+                Image(systemName: "app.dashed") // Temporarily use system icon
                     .resizable()
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 18, height: 18)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 24, height: 24)
+                    .foregroundColor(.secondary)
 
                 Text(app.name)
                     .font(.subheadline)
@@ -179,6 +194,9 @@ struct AppVolumeRow: View {
 
                 Slider(value: $app.volume, in: 0...1)
                     .tint(.gray)
+                    .onChange(of: app.volume) { _, newValue in
+                        onVolumeChange(Float(newValue))
+                    }
             }
         }
     }

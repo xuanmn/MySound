@@ -16,5 +16,9 @@
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MySound needs access to audio to mix your application volumes.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>MySound needs access to system audio to capture per-app sounds.</string>
 </dict>
 </plist>

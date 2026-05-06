@@ -14,7 +14,7 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 echo "Compiling Swift files..."
-swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift -target arm64-apple-macos14.2
+swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/AudioEngineManager.swift -target arm64-apple-macos14.2
 
 # Check if compile succeeded
 if [ $? -ne 0 ]; then
@@ -42,9 +42,16 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MySound needs access to audio to mix your application volumes.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>MySound needs access to system audio to capture per-app sounds.</string>
 </dict>
 </plist>
 EOF
+
+echo "Signing app..."
+codesign --force --sign - --entitlements Entitlements.plist "${APP_BUNDLE}"
 
 echo "Build complete. App bundle created at ${APP_BUNDLE}"
 echo "You can run it with: open ${APP_BUNDLE}"

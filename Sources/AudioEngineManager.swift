@@ -53,7 +53,7 @@ class AudioEngineManager: ObservableObject {
 
         // Convert AudioBufferList to AVAudioPCMBuffer
         // For interleaved stereo float32, mDataByteSize = frameCount * 2 channels * 4 bytes
-        let frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size * tapFormat.channelCount)
+        let frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size * Int(tapFormat.channelCount))
         guard frameCount > 0 else { return }
 
         guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: tapFormat, frameCapacity: frameCount) else { return }

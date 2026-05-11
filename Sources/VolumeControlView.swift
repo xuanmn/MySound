@@ -107,6 +107,11 @@ struct VolumeControlView: View {
             }
             .frame(width: 320, height: 400)
             .onAppear {
+                // Set up audio buffer callback
+                tapManager.onAudioBuffer = { pid, buffer in
+                    engineManager.processBuffer(pid: pid, bufferList: buffer)
+                }
+                
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
                 
@@ -125,12 +130,6 @@ struct VolumeControlView: View {
                     tapManager.removeTap(for: pid)
                 }
             }
-            .onAppear {
-                tapManager.onAudioBuffer = { pid, buffer in
-                    engineManager.processBuffer(pid: pid, bufferList: buffer)
-                }
-            }
-
 
             Divider()
 

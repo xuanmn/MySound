@@ -9,6 +9,6 @@ struct MySoundApp: App {
         MenuBarExtra("MySound", systemImage: "speaker.wave.2.fill") {
             VolumeControlView()
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
     }
 }

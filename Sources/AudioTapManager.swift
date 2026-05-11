@@ -25,15 +25,15 @@ class AudioTapManager: NSObject, ObservableObject {
     @Published var activeTaps: [pid_t: AudioObjectID] = [:]
     private var ioProcs: [pid_t: AudioDeviceIOProcID] = [:]
     
-    // Callback for when we receive audio data
-    var onAudioBuffer: ((pid_t, UnsafePointer<AudioBufferList>) -> Void)?
+    // Callback for when we receive audio data - called from real-time audio thread
+    nonisolated(unsafe) var onAudioBuffer: ((pid_t, UnsafePointer<AudioBufferList>) -> Void)?
     
     func createTap(for pid: pid_t) {
         if activeTaps[pid] != nil { return }
         
-        let description = CATapDescription(stereoMixdownOfProcesses: [pid])
+        let description = CATapDescription(stereoMixdownOfProcesses: [AudioObjectID(pid)])
         description.uuid = UUID()
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = CATapMuteBehavior.mutedWhenTapped
         description.isPrivate = true
         
         var tapID: AudioObjectID = 0
@@ -59,7 +59,7 @@ class AudioTapManager: NSObject, ObservableObject {
         
         if status == noErr, let proc = procID {
             ioProcs[pid] = proc
-            AudioDeviceStart(tapID, proc)
+            _ = AudioDeviceStart(tapID, proc)
             print("SUCCESS: Started IO Proc for PID \(pid)")
         } else {
             print("ERROR: Failed to create IO Proc for PID \(pid): \(status)")
@@ -70,7 +70,7 @@ class AudioTapManager: NSObject, ObservableObject {
         guard let tapID = activeTaps[pid] else { return }
         
         if let proc = ioProcs[pid] {
-            AudioDeviceStop(tapID, proc)
+            _ = AudioDeviceStop(tapID, proc)
             ioProcs.removeValue(forKey: pid)
         }
         

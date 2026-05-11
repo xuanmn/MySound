@@ -6,10 +6,12 @@ class AudioEngineManager: ObservableObject {
     private var playerNodes: [pid_t: AVAudioPlayerNode] = [:]
     private var mixerNodes: [pid_t: AVAudioMixerNode] = [:]
     
-    // Default format for taps (stereo, 48kHz, float32)
-    // In a production app, you might want to query the tap's actual format
-    private let tapFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    // Core Audio Tap is generally interleaved float32. Let's create a format that matches.
+    private let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true)!
     
+    // Heartbeat tracker to not spam console
+    private var bufferCount: [pid_t: Int] = [:]
+
     init() {
         startEngine()
     }
@@ -41,31 +43,29 @@ class AudioEngineManager: ObservableObject {
             return
         }
         
+        bufferCount[pid, default: 0] += 1
+        if bufferCount[pid]! % 100 == 0 {
+            print("HEARTBEAT: Processing buffer #\(bufferCount[pid]!) for PID \(pid)")
+        }
+        
+        let mBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+        guard mBuffers.count > 0, let mData = mBuffers[0].mData else { return }
+        
         // Convert AudioBufferList to AVAudioPCMBuffer
-        // The tap usually provides 512 or 1024 frames
-        let frameCount = bufferList.pointee.mBuffers.mDataByteSize / UInt32(MemoryLayout<Float>.size * 2)
+        // For interleaved stereo float32, mDataByteSize = frameCount * 2 channels * 4 bytes
+        let frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size * tapFormat.channelCount)
         guard frameCount > 0 else { return }
         
         guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: tapFormat, frameCapacity: frameCount) else { return }
         pcmBuffer.frameLength = frameCount
         
-        // Copy data from bufferList to pcmBuffer
-        let abl = bufferList.pointee
-        if let dest = pcmBuffer.floatChannelData {
-            let mBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
-            for i in 0..<Int(tapFormat.channelCount) {
-                if i < mBuffers.count {
-                    let src = mBuffers[i].mData
-                    let size = Int(mBuffers[i].mDataByteSize)
-                    if let src = src {
-                        dest[i].assign(from: src.assumingMemoryBound(to: Float.self), count: size / MemoryLayout<Float>.size)
-                    }
-                }
-            }
+        // Because we are using an interleaved format, we just copy the single interleaved buffer directly
+        if let dest = pcmBuffer.audioBufferList.pointee.mBuffers.mData {
+            memcpy(dest, mData, Int(mBuffers[0].mDataByteSize))
         }
         
-        // Schedule the buffer for playback
-        player.scheduleBuffer(pcmBuffer, at: nil, options: .interrupts, completionHandler: nil)
+        // Schedule the buffer for playback smoothly without interrupting
+        player.scheduleBuffer(pcmBuffer, at: nil, options: [], completionHandler: nil)
         
         if !player.isPlaying {
             player.play()
@@ -73,6 +73,7 @@ class AudioEngineManager: ObservableObject {
     }
     
     func setVolume(for pid: pid_t, volume: Float) {
+        print("SET VOLUME for PID \(pid) to \(volume)")
         mixerNodes[pid]?.outputVolume = volume
     }
     

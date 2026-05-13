@@ -73,6 +73,9 @@ struct VolumeControlView: View {
 
                     Slider(value: $masterVolume, in: 0...1)
                         .tint(.blue)
+                        .onChange(of: masterVolume) { newValue in
+                            tapManager.setMasterVolume(Float(newValue))
+                        }
 
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption)
@@ -108,21 +111,8 @@ struct VolumeControlView: View {
             .onAppear {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
-
-                // Initialize taps for all running apps
-                for app in newApps {
-                    tapManager.createTap(for: app.pid)
-                    tapManager.setVolume(for: app.pid, volume: Float(app.volume))
-                }
             }
             .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
-                // Handle new apps
-                for pid in newPids where !oldPids.contains(pid) {
-                    tapManager.createTap(for: pid)
-                    if let app = appManager.apps.first(where: { $0.pid == pid }) {
-                        tapManager.setVolume(for: pid, volume: Float(app.volume))
-                    }
-                }
                 // Handle terminated apps
                 for pid in oldPids where !newPids.contains(pid) {
                     tapManager.removeTap(for: pid)

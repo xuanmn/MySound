@@ -66,9 +66,32 @@ struct VolumeControlView: View {
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
     @StateObject private var tapManager = AudioTapManager()
+    @StateObject private var updateManager = UpdateManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
+            // Update Banner
+            if updateManager.isUpdateAvailable {
+                Button(action: {
+                    if let url = updateManager.updateURL {
+                        NSWorkspace.shared.open(url)
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text("Update Available (\(updateManager.latestVersion ?? ""))")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.blue.opacity(0.1))
+                    .foregroundColor(.blue)
+                }
+                .buttonStyle(.plain)
+                Divider()
+            }
+
             // Header / Master Volume
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -169,6 +192,13 @@ struct VolumeControlView: View {
                         .onChange(of: isLaunchAtLogin) { _, newValue in
                             toggleLaunchAtLogin(newValue)
                         }
+                    
+                    Divider()
+                    
+                    Button("Check for Updates...") {
+                        updateManager.checkForUpdates(manual: true)
+                    }
+                    .disabled(updateManager.isChecking)
                 } label: {
                     Image(systemName: "gearshape.fill")
                         .foregroundColor(.secondary)

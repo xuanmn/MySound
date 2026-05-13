@@ -5,9 +5,10 @@ class AudioEngineManager: ObservableObject {
     private let engine = AVAudioEngine()
     private var playerNodes: [pid_t: AVAudioPlayerNode] = [:]
     private var mixerNodes: [pid_t: AVAudioMixerNode] = [:]
+    private let lock = NSLock()
 
-    // Core Audio Tap is generally interleaved float32. Let's create a format that matches.
-    private let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true)!
+    // Core Audio Tap is generally non-interleaved float32. Let's create a format that matches.
+    private let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false)!
 
     // Heartbeat tracker to not spam console
     private var bufferCount: [pid_t: Int] = [:]
@@ -17,7 +18,10 @@ class AudioEngineManager: ObservableObject {
     }
 
     func setupPlayer(for pid: pid_t) {
-        if playerNodes[pid] != nil { return }
+        lock.lock()
+        let exists = playerNodes[pid] != nil
+        lock.unlock()
+        if exists { return }
 
         let player = AVAudioPlayerNode()
         let mixer = AVAudioMixerNode()
@@ -29,39 +33,62 @@ class AudioEngineManager: ObservableObject {
         engine.connect(player, to: mixer, format: tapFormat)
         engine.connect(mixer, to: engine.mainMixerNode, format: tapFormat)
 
+        lock.lock()
         playerNodes[pid] = player
         mixerNodes[pid] = mixer
+        lock.unlock()
 
         player.play()
     }
 
     func processBuffer(pid: pid_t, bufferList: UnsafePointer<AudioBufferList>) {
-        guard let player = playerNodes[pid] else {
+        lock.lock()
+        let player = playerNodes[pid]
+        lock.unlock()
+
+        guard let player = player else {
             DispatchQueue.main.async {
                 self.setupPlayer(for: pid)
             }
             return
         }
 
+        lock.lock()
         bufferCount[pid, default: 0] += 1
-        if bufferCount[pid]! % 100 == 0 {
-            print("HEARTBEAT: Processing buffer #\(bufferCount[pid]!) for PID \(pid)")
+        let count = bufferCount[pid]!
+        lock.unlock()
+
+        if count % 100 == 0 {
+            print("HEARTBEAT: Processing buffer #\(count) for PID \(pid)")
         }
 
         let mBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
-        guard mBuffers.count > 0, let mData = mBuffers[0].mData else { return }
+        guard mBuffers.count > 0 else { return }
 
-        // Convert AudioBufferList to AVAudioPCMBuffer
-        // For interleaved stereo float32, mDataByteSize = frameCount * 2 channels * 4 bytes
-        let frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size * Int(tapFormat.channelCount))
+        let isInterleaved = mBuffers.count == 1
+        let channelCount = UInt32(mBuffers.count)
+        
+        let frameCount: UInt32
+        if isInterleaved {
+            frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size * Int(tapFormat.channelCount))
+        } else {
+            frameCount = mBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size)
+        }
+        
         guard frameCount > 0 else { return }
 
-        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: tapFormat, frameCapacity: frameCount) else { return }
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: tapFormat.sampleRate, channels: tapFormat.channelCount, interleaved: isInterleaved)!
+        
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
         pcmBuffer.frameLength = frameCount
 
-        // Because we are using an interleaved format, we just copy the single interleaved buffer directly
-        if let dest = pcmBuffer.audioBufferList.pointee.mBuffers.mData {
-            memcpy(dest, mData, Int(mBuffers[0].mDataByteSize))
+        let destBuffers = UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList)
+        for i in 0..<Int(channelCount) {
+            if i < destBuffers.count && i < mBuffers.count {
+                if let dest = destBuffers[i].mData, let src = mBuffers[i].mData {
+                    memcpy(dest, src, Int(mBuffers[i].mDataByteSize))
+                }
+            }
         }
 
         // Schedule the buffer for playback smoothly without interrupting
@@ -74,7 +101,10 @@ class AudioEngineManager: ObservableObject {
 
     func setVolume(for pid: pid_t, volume: Float) {
         print("SET VOLUME for PID \(pid) to \(volume)")
-        mixerNodes[pid]?.outputVolume = volume
+        lock.lock()
+        let mixer = mixerNodes[pid]
+        lock.unlock()
+        mixer?.outputVolume = volume
     }
 
     private func startEngine() {
@@ -85,4 +115,3 @@ class AudioEngineManager: ObservableObject {
         }
     }
 }
-

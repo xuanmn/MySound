@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CoreAudio
+import ServiceManagement
 
 struct AppVolume: Identifiable {
     var id: Int32 { pid } // Use PID as unique ID
@@ -60,6 +61,7 @@ class AppManager: ObservableObject {
 
 struct VolumeControlView: View {
     @State private var masterVolume: Double = 0.5
+    @State private var isLaunchAtLogin: Bool = false
 
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
@@ -85,7 +87,7 @@ struct VolumeControlView: View {
                     
                     Slider(value: $masterVolume, in: 0...1)
                         .tint(.blue)
-                        .onChange(of: masterVolume) { old, newValue in
+                        .onChange(of: masterVolume) { _, newValue in
                             tapManager.setSystemVolume(Float(newValue))
                         }
                     
@@ -99,6 +101,7 @@ struct VolumeControlView: View {
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
+                checkLaunchAtLoginStatus()
                 
                 // Add a timer to keep system volume in sync if changed via hardware keys
                 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -116,7 +119,7 @@ struct VolumeControlView: View {
             // App Volumes
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
-                    Text("No apps running")
+                    Text("No apps playing audio")
                         .foregroundColor(.secondary)
                         .padding()
                 } else {
@@ -132,7 +135,8 @@ struct VolumeControlView: View {
                     }
                 }
             }
-            .frame(width: 320, height: 400)
+            .frame(width: 320)
+            .frame(minHeight: 100, maxHeight: 600)
             .onAppear {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
@@ -160,18 +164,39 @@ struct VolumeControlView: View {
 
                 Spacer()
 
-                Button(action: {
-                    // Settings action
-                }) {
+                Menu {
+                    Toggle("Launch at Login", isOn: $isLaunchAtLogin)
+                        .onChange(of: isLaunchAtLogin) { _, newValue in
+                            toggleLaunchAtLogin(newValue)
+                        }
+                } label: {
                     Image(systemName: "gearshape.fill")
                         .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
                 .padding(.horizontal)
             }
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         }
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
+    }
+
+    private func toggleLaunchAtLogin(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        do {
+            if enabled {
+                try service.register()
+            } else {
+                try service.unregister()
+            }
+        } catch {
+            print("ERROR: Could not update launch at login status: \(error)")
+        }
+    }
+
+    private func checkLaunchAtLoginStatus() {
+        isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
 }
 
@@ -215,21 +240,20 @@ struct AppVolumeRow: View {
     }
 }
 
-// Helper to use NSVisualEffectView in SwiftUI for glassmorphism
 struct VisualEffectView: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
 
     func makeNSView(context: Context) -> NSVisualEffectView {
-        let visualEffectView = NSVisualEffectView()
-        visualEffectView.material = material
-        visualEffectView.blendingMode = blendingMode
-        visualEffectView.state = .active
-        return visualEffectView
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
     }
 
-    func updateNSView(_ visualEffectView: NSVisualEffectView, context: Context) {
-        visualEffectView.material = material
-        visualEffectView.blendingMode = blendingMode
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
     }
 }

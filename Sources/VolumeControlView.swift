@@ -112,12 +112,16 @@ struct VolumeControlView: View {
                 // Initialize taps for all running apps
                 for app in newApps {
                     tapManager.createTap(for: app.pid)
+                    tapManager.setVolume(for: app.pid, volume: Float(app.volume))
                 }
             }
             .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
                 // Handle new apps
                 for pid in newPids where !oldPids.contains(pid) {
                     tapManager.createTap(for: pid)
+                    if let app = appManager.apps.first(where: { $0.pid == pid }) {
+                        tapManager.setVolume(for: pid, volume: Float(app.volume))
+                    }
                 }
                 // Handle terminated apps
                 for pid in oldPids where !newPids.contains(pid) {

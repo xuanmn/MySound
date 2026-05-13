@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import AppKit
 
 // Declare private Core Audio functions
 @_silgen_name("AudioHardwareCreateProcessTap")
@@ -34,6 +35,12 @@ class AudioTapManager: NSObject, ObservableObject {
         volumeLock.lock()
         volumes[pid] = volume
         volumeLock.unlock()
+        
+        if activeTaps[pid] == nil {
+            Task { @MainActor in
+                createTap(for: pid)
+            }
+        }
     }
     
     private func getVolume(for pid: pid_t) -> Float {
@@ -51,7 +58,13 @@ class AudioTapManager: NSObject, ObservableObject {
             return
         }
         
-        let tapDescription = CATapDescription(stereoMixdownOfProcesses: [AudioObjectID(pid)])
+        let objectIDs = getAudioObjectIDs(for: pid)
+        guard !objectIDs.isEmpty else {
+            print("ERROR: Could not find AudioObjectID for PID \(pid)")
+            return
+        }
+        
+        let tapDescription = CATapDescription(stereoMixdownOfProcesses: objectIDs)
         tapDescription.uuid = UUID()
         tapDescription.muteBehavior = .mutedWhenTapped
         tapDescription.isPrivate = true
@@ -103,15 +116,31 @@ class AudioTapManager: NSObject, ObservableObject {
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
             
-            for i in 0..<min(inputs.count, outputs.count) {
-                if let src = inputs[i].mData, let dst = outputs[i].mData {
-                    let frameCount = Int(inputs[i].mDataByteSize) / MemoryLayout<Float>.size
-                    let srcFloat = src.assumingMemoryBound(to: Float.self)
-                    let dstFloat = dst.assumingMemoryBound(to: Float.self)
-                    
-                    for f in 0..<frameCount {
-                        dstFloat[f] = srcFloat[f] * volume
-                    }
+            let inputBufferCount = inputs.count
+            let outputBufferCount = outputs.count
+            
+            for outputIndex in 0..<outputBufferCount {
+                let outputBuffer = outputs[outputIndex]
+                guard let dst = outputBuffer.mData else { continue }
+                
+                let inputIndex: Int
+                if inputBufferCount > outputBufferCount {
+                    inputIndex = inputBufferCount - outputBufferCount + outputIndex
+                } else {
+                    inputIndex = outputIndex
+                }
+                
+                guard inputIndex < inputBufferCount, let src = inputs[inputIndex].mData else {
+                    memset(dst, 0, Int(outputBuffer.mDataByteSize))
+                    continue
+                }
+                
+                let frameCount = Int(inputs[inputIndex].mDataByteSize) / MemoryLayout<Float>.size
+                let srcFloat = src.assumingMemoryBound(to: Float.self)
+                let dstFloat = dst.assumingMemoryBound(to: Float.self)
+                
+                for f in 0..<frameCount {
+                    dstFloat[f] = srcFloat[f] * volume
                 }
             }
         }
@@ -160,25 +189,87 @@ class AudioTapManager: NSObject, ObservableObject {
             &defaultOutputDeviceID)
         
         if status == noErr {
-            var uid: CFString? = nil
-            var uidSize = UInt32(MemoryLayout<CFString?>.size)
+            var uid: Unmanaged<CFString>?
+            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
             var uidAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyDeviceUID,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain)
             
-            status = AudioObjectGetPropertyData(
-                defaultOutputDeviceID,
-                &uidAddress,
-                0,
-                nil,
-                &uidSize,
-                &uid)
+            status = withUnsafeMutablePointer(to: &uid) { uidPtr in
+                AudioObjectGetPropertyData(
+                    defaultOutputDeviceID,
+                    &uidAddress,
+                    0,
+                    nil,
+                    &uidSize,
+                    uidPtr)
+            }
             
-            if status == noErr, let uidString = uid {
+            if status == noErr, let uidString = uid?.takeRetainedValue() {
                 return uidString as String
             }
         }
         return nil
+    }
+    
+    private typealias ResponsibilityFunc = @convention(c) (pid_t) -> pid_t
+    
+    private func getAudioObjectIDs(for targetPID: pid_t) -> [AudioObjectID] {
+        var processListSize: UInt32 = 0
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize)
+        guard status == noErr else { return [] }
+        
+        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
+        var processIDs = [AudioObjectID](repeating: 0, count: count)
+        
+        status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs)
+        guard status == noErr else { return [] }
+        
+        let targetApp = NSRunningApplication(processIdentifier: targetPID)
+        let targetBundleID = targetApp?.bundleIdentifier
+        
+        let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
+        let getResponsiblePID: ((pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: ResponsibilityFunc.self) : nil
+        
+        var matchingIDs: [AudioObjectID] = []
+        for processID in processIDs {
+            var pidSize = UInt32(MemoryLayout<pid_t>.size)
+            var pidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyPID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var processPID: pid_t = 0
+            let pidStatus = AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID)
+            
+            guard pidStatus == noErr else { continue }
+            
+            if processPID == targetPID {
+                matchingIDs.append(processID)
+                continue
+            }
+            
+            if let respPID = getResponsiblePID?(processPID), respPID == targetPID {
+                matchingIDs.append(processID)
+                continue
+            }
+            
+            if let targetBundleID = targetBundleID {
+                let processApp = NSRunningApplication(processIdentifier: processPID)
+                if let processBundleID = processApp?.bundleIdentifier, processBundleID.hasPrefix(targetBundleID) {
+                    matchingIDs.append(processID)
+                    continue
+                }
+            }
+        }
+        
+        return matchingIDs
     }
 }

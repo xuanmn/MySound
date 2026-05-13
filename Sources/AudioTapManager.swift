@@ -186,6 +186,81 @@ class AudioTapManager: NSObject, ObservableObject {
         print("SUCCESS: Destroyed Tap for PID \(pid)")
     }
 
+    func setSystemVolume(_ volume: Float) {
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &defaultOutputDeviceID)
+        
+        if status == noErr {
+            var vol = volume
+            let volSize = UInt32(MemoryLayout<Float32>.size)
+            var volAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            
+            // Check if volume is settable
+            var isSettable: DarwinBoolean = false
+            AudioObjectIsPropertySettable(defaultOutputDeviceID, &volAddr, &isSettable)
+            
+            if isSettable.boolValue {
+                AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, volSize, &vol)
+            } else {
+                // If scalar volume isn't settable, try setting it on channels (1 and 2 for stereo)
+                for channel in 1...2 {
+                    volAddr.mElement = UInt32(channel)
+                    AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, volSize, &vol)
+                }
+            }
+        }
+    }
+
+    func getSystemVolume() -> Float {
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        
+        var status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &defaultOutputDeviceID)
+        
+        if status == noErr {
+            var vol: Float32 = 0
+            var volSize = UInt32(MemoryLayout<Float32>.size)
+            var volAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            
+            status = AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol)
+            if status != noErr {
+                // Try channel 1 if master fails
+                volAddr.mElement = 1
+                AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol)
+            }
+            return Float(vol)
+        }
+        return 0.5
+    }
+
     private func getDefaultOutputDeviceUID() -> String? {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -283,7 +358,40 @@ class AudioTapManager: NSObject, ObservableObject {
                 }
             }
         }
-
         return matchingIDs
+    }
+
+    static func getAudioActivePIDs() -> Set<pid_t> {
+        var processListSize: UInt32 = 0
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize)
+        guard status == noErr else { return [] }
+
+        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
+        var processIDs = [AudioObjectID](repeating: 0, count: count)
+
+        status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs)
+        guard status == noErr else { return [] }
+
+        var activePIDs = Set<pid_t>()
+        for processID in processIDs {
+            var pidSize = UInt32(MemoryLayout<pid_t>.size)
+            var pidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyPID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var processPID: pid_t = 0
+            let pidStatus = AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID)
+            if pidStatus == noErr {
+                activePIDs.insert(processPID)
+            }
+        }
+        return activePIDs
     }
 }

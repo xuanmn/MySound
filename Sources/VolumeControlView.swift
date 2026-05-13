@@ -11,14 +11,23 @@ struct AppVolume: Identifiable {
     var volume: Double
 }
 
+@MainActor
 class AppManager: ObservableObject {
     @Published var apps: [AppVolume] = []
+    private var timer: Timer?
 
     init() {
         self.apps = Self.getRunningApps(existingApps: [])
 
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        
+        // Periodically refresh to catch apps that start/stop playing audio
+        self.timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateApps(notification: Notification(name: NSWorkspace.didLaunchApplicationNotification))
+            }
+        }
     }
 
     @objc func updateApps(notification: Notification) {
@@ -29,8 +38,11 @@ class AppManager: ObservableObject {
     }
 
     static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
+        let activeAudioPIDs = AudioTapManager.getAudioActivePIDs()
         let runningApps = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
+            .filter { app in
+                app.activationPolicy == .regular && activeAudioPIDs.contains(app.processIdentifier)
+            }
 
         var newApps: [AppVolume] = []
         for app in runningApps {
@@ -47,7 +59,7 @@ class AppManager: ObservableObject {
 }
 
 struct VolumeControlView: View {
-    @State private var masterVolume: Double = 0.75
+    @State private var masterVolume: Double = 0.5
 
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
@@ -70,13 +82,13 @@ struct VolumeControlView: View {
                     Image(systemName: masterVolume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill")
                         .foregroundColor(.secondary)
                         .frame(width: 20)
-
+                    
                     Slider(value: $masterVolume, in: 0...1)
                         .tint(.blue)
-                        .onChange(of: masterVolume) { newValue in
-                            tapManager.setMasterVolume(Float(newValue))
+                        .onChange(of: masterVolume) { old, newValue in
+                            tapManager.setSystemVolume(Float(newValue))
                         }
-
+                    
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -85,6 +97,19 @@ struct VolumeControlView: View {
             }
             .padding()
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+            .onAppear {
+                masterVolume = Double(tapManager.getSystemVolume())
+                
+                // Add a timer to keep system volume in sync if changed via hardware keys
+                Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                    Task { @MainActor in
+                        let current = Double(tapManager.getSystemVolume())
+                        if abs(current - masterVolume) > 0.01 {
+                            masterVolume = current
+                        }
+                    }
+                }
+            }
 
             Divider()
 

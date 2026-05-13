@@ -1,2 +1,0 @@
-import CoreAudio
-print(kAudioAggregateDeviceNameKey)

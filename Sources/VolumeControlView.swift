@@ -52,7 +52,6 @@ struct VolumeControlView: View {
     // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
     @StateObject private var tapManager = AudioTapManager()
-    @StateObject private var engineManager = AudioEngineManager()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,7 +96,7 @@ struct VolumeControlView: View {
                         VStack(spacing: 12) {
                             ForEach($appManager.apps) { $app in
                                 AppVolumeRow(app: $app) { newVolume in
-                                    engineManager.setVolume(for: app.pid, volume: newVolume)
+                                    tapManager.setVolume(for: app.pid, volume: newVolume)
                                 }
                             }
                         }
@@ -107,14 +106,9 @@ struct VolumeControlView: View {
             }
             .frame(width: 320, height: 400)
             .onAppear {
-                // Set up audio buffer callback
-                tapManager.onAudioBuffer = { pid, buffer in
-                    engineManager.processBuffer(pid: pid, bufferList: buffer)
-                }
-                
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
-                
+
                 // Initialize taps for all running apps
                 for app in newApps {
                     tapManager.createTap(for: app.pid)

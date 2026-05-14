@@ -1,52 +1,58 @@
-# MySound 🔊
+# 🎧 MySound
 
-**MySound** is a lightweight, high-performance macOS utility that gives you individual volume control for every application running on your Mac. No virtual drivers, no complex setup—just simple, per-app audio management.
+**The ultimate per-app volume controller for macOS.**
 
-![MySound Screenshot](https://raw.githubusercontent.com/user/repo/main/screenshot.png) *(Replace with your actual screenshot)*
+MySound gives you total control over your Mac's audio. Adjust the volume of individual applications like Chrome, Spotify, or Zoom independently of your system volume—all from a beautiful, minimalist menu bar interface.
+
+![MySound Screenshot](screenshot.png)
 
 ## ✨ Features
 
-- **Individual App Sliders**: Adjust the volume of Chrome, Spotify, Zoom, or any other app independently.
-- **Dynamic App List**: Only shows apps that are currently playing audio to keep the interface clean.
-- **System Volume Sync**: The master slider controls your hardware volume and stays in sync with your keyboard volume keys.
-- **Launch at Login**: Optional setting to have MySound start automatically when you log in.
-- **High Performance**: Uses a thread-safe ring buffer and `AVAudioEngine` for zero-latency, crash-free audio processing.
+- **Per-App Volume Control**: Fine-tune the volume for every running application.
+- **Direct-Zero Architecture**: Zero-latency audio routing for perfect sync and crystal-clear sound.
+- **Smart App Grouping**: Automatically bundles sub-processes (like Chrome helpers) into a single control.
+- **Native Experience**: Built with Swift and SwiftUI to feel right at home on macOS.
+- **Dynamic Interface**: A sleek, translucent UI that adapts to your active apps.
+- **Launch at Login**: Ready to go the moment you start your Mac.
+- **Auto-Updates**: Built-in update manager to keep you on the latest version.
 
-## 🚀 Installation
+## 🚀 Getting Started
 
-1. Download the latest `MySound.zip` from the [Releases](https://github.com/YOUR_USERNAME/MySound/releases) page.
-2. Unzip the file.
-3. Move `MySound.app` to your `/Applications` folder.
+### Prerequisites
+- macOS 14.2 or later (Sonoma or Sequoia)
+- Apple Silicon (M1/M2/M3) recommended
 
-### ⚠️ Important: First Launch Instructions
-Because MySound is an open-source project and not signed with an Apple Developer certificate, macOS Gatekeeper will show a warning on the first launch.
+### Installation
 
-1. **Right-click** (or Control-click) `MySound.app` in your Applications folder.
-2. Select **Open** from the menu.
-3. Click **Open** again in the dialog box.
-4. You will only need to do this once.
-
-## 🛡️ Permissions
-
-MySound requires two permissions to function:
-- **System Audio Recording**: Required to "tap" into the audio streams of other applications.
-- **Accessibility**: Required to manage application processes.
-
-## 🛠️ Building from Source
-
-If you want to build the app yourself, you'll need a Mac with Xcode installed.
-
-1. Clone the repository:
+1. **Clone the repository**:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/MySound.git
+   git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-2. Build the app:
+
+2. **Build the app**:
    ```bash
    ./build.sh
    ```
-3. The app will be available at `build/MySound.app`.
 
-## 📄 License
+3. **Run MySound**:
+   ```bash
+   open build/MySound.app
+   ```
+
+### Permissions
+On first launch, macOS will ask for **Microphone Access**.
+> [!NOTE]
+> MySound **does not record your microphone**. It requires this permission to utilize the Core Audio "Tap" system for per-app volume routing.
+
+## 🛠 Troubleshooting
+
+- **No sound?** Ensure that the app you want to control is actually playing audio.
+- **Distorted audio?** Try restarting the app or your output device. MySound automatically syncs with your hardware sample rate for the best quality.
+
+## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+*Developed with ❤️ by Xuanmn*

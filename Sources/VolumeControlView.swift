@@ -42,14 +42,11 @@ class AppManager: ObservableObject {
         let activeAudioPIDs = AudioTapManager.getAudioActivePIDs()
         let allRunning = NSWorkspace.shared.runningApplications
         
-        print("DEBUG: Total running apps in workspace: \(allRunning.count)")
         
         let runningApps = allRunning.filter { app in
             let isRegular = app.activationPolicy == .regular
             let isActive = activeAudioPIDs.contains(app.processIdentifier)
-            let isProducingSound = AudioEngineManager.shared.isPIDActive(app.processIdentifier)
-            
-            return isRegular && isActive && isProducingSound
+            return isRegular && isActive
         }
 
         var newApps: [AppVolume] = []

@@ -12,7 +12,6 @@ rm -rf "$BUILD_DIR"
 
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
-
 echo "Compiling Swift files..."
 swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/AudioEngineManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
 

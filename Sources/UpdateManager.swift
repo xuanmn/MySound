@@ -19,7 +19,7 @@ class UpdateManager: ObservableObject {
     @Published var errorMessage: String?
     
     // Replace this with your actual version.json URL (e.g. GitHub raw content)
-    private let versionURL = URL(string: "https://raw.githubusercontent.com/YOUR_USERNAME/MySound/main/version.json")!
+    private let versionURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/version.json")!
     
     func checkForUpdates(manual: Bool = false) {
         guard !isChecking else { return }
@@ -32,7 +32,11 @@ class UpdateManager: ObservableObject {
                 let (data, response) = try await URLSession.shared.data(from: versionURL)
                 
                 guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                    throw NSError(domain: "UpdateManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch version info"])
+                    self.isChecking = false
+                    if manual {
+                        self.showErrorAlert(error: "Could not find update file on server (404).")
+                    }
+                    return
                 }
                 
                 let updateInfo = try JSONDecoder().decode(UpdateInfo.self, from: data)
@@ -53,11 +57,12 @@ class UpdateManager: ObservableObject {
                 
                 self.isChecking = false
             } catch {
-                print("Failed to check for updates: \(error)")
                 self.isChecking = false
                 if manual {
                     self.errorMessage = error.localizedDescription
                     self.showErrorAlert(error: error.localizedDescription)
+                } else {
+                    print("Update check: Remote version file not found or network offline.")
                 }
             }
         }

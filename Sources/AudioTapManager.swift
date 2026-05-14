@@ -26,6 +26,7 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     @Published var activeTaps: [pid_t: TapState] = [:]
+    private var timer: Timer?
 
     // Store volumes in a thread-safe way for the audio callback
     private var volumes: [pid_t: Float] = [:]
@@ -36,14 +37,62 @@ class AudioTapManager: NSObject, ObservableObject {
         volumes[pid] = volume
         volumeLock.unlock()
 
-        // Update the engine's volume for this PID
-        engineManager.setVolume(for: pid, volume: volume)
-
         if activeTaps[pid] == nil {
             Task { @MainActor in
                 createTap(for: pid)
             }
         }
+        
+        // Ensure we manage taps immediately
+        autoManageTaps()
+    }
+
+    func startMonitoring() {
+        self.timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.autoManageTaps()
+            }
+        }
+        autoManageTaps()
+    }
+
+    private func autoManageTaps() {
+        let currentActivePIDs = Self.getAudioActivePIDs()
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let runningApps = NSWorkspace.shared.runningApplications
+        
+        // Only manage taps for apps that the user actually sees (Regular apps)
+        // and definitely exclude ourselves!
+        let filteredPIDs = currentActivePIDs.filter { pid in
+            if pid == ownPID { return false }
+            
+            // Only tap if it's a regular app or a helper belonging to one
+            return runningApps.contains { $0.processIdentifier == pid && $0.activationPolicy == .regular } ||
+                   runningApps.contains { app in 
+                       app.activationPolicy == .regular && 
+                       AudioTapManager.isHelper(pid: pid, for: app)
+                   }
+        }
+        
+        // Add taps for new audio processes
+        for pid in filteredPIDs {
+            if activeTaps[pid] == nil {
+                createTap(for: pid)
+            }
+        }
+        
+        // Remove taps for processes that are no longer active
+        for pid in activeTaps.keys {
+            if !filteredPIDs.contains(pid) {
+                removeTap(for: pid)
+            }
+        }
+    }
+
+    private static func isHelper(pid: pid_t, for app: NSRunningApplication) -> Bool {
+        guard let bundleID = app.bundleIdentifier else { return false }
+        let processApp = NSRunningApplication(processIdentifier: pid)
+        return processApp?.bundleIdentifier?.hasPrefix(bundleID) == true
     }
 
     func setMasterVolume(_ volume: Float) {
@@ -76,7 +125,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
         let tapDescription = CATapDescription(stereoMixdownOfProcesses: objectIDs)
         tapDescription.uuid = UUID()
-        tapDescription.muteBehavior = .mutedWhenTapped
+        tapDescription.muteBehavior = .muted
         tapDescription.isPrivate = true
 
         var tapID: AudioObjectID = 0
@@ -138,15 +187,34 @@ class AudioTapManager: NSObject, ObservableObject {
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { [weak self] (now, inputData, inputTime, outputData, outputTime) in
             guard let self = self else { return }
 
-            // Pass the tap's input data to the AudioEngineManager for processing/playback
-            self.engineManager.processBuffer(pid: pid, bufferList: inputData)
-
-            // We don't write to outputData here because AVAudioEngine handles the playback
+            let volume = self.getVolume(for: pid)
+            let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
-            for outBuffer in outputs {
-                if let dst = outBuffer.mData {
-                    memset(dst, 0, Int(outBuffer.mDataByteSize))
+            
+            var isProducingSound = false
+
+            // Map input tap buffers to output device buffers
+            for i in 0..<min(inputs.count, outputs.count) {
+                let inputBuffer = inputs[i]
+                let outputBuffer = outputs[i]
+                
+                guard let src = inputBuffer.mData?.assumingMemoryBound(to: Float.self),
+                      let dst = outputBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                
+                let frameCount = inputBuffer.mDataByteSize / 4
+                
+                for j in 0..<Int(frameCount) {
+                    let sample = src[j]
+                    dst[j] = sample * volume
+                    
+                    if !isProducingSound && abs(sample) > 0.001 {
+                        isProducingSound = true
+                    }
                 }
+            }
+            
+            if isProducingSound {
+                AudioEngineManager.shared.updateActivity(for: pid)
             }
         }
 
@@ -156,7 +224,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
             let startStatus = AudioDeviceStart(aggID, proc)
             if startStatus == noErr {
-                print("SUCCESS: Started Aggregate IO Proc for PID \(pid)")
+                print("SUCCESS: Started Direct IO Proc for PID \(pid)")
             } else {
                 print("ERROR: Failed to start audio device for PID \(pid): \(startStatus)")
                 activeTaps.removeValue(forKey: pid)
@@ -370,13 +438,17 @@ class AudioTapManager: NSObject, ObservableObject {
         )
 
         var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize)
-        guard status == noErr else { return [] }
+        if status != noErr { return [] }
 
         let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
         var processIDs = [AudioObjectID](repeating: 0, count: count)
 
         status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs)
-        guard status == noErr else { return [] }
+        if status != noErr { return [] }
+
+        // Find the responsibility function in the system
+        let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
+        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
 
         var activePIDs = Set<pid_t>()
         for processID in processIDs {
@@ -388,7 +460,13 @@ class AudioTapManager: NSObject, ObservableObject {
             )
             var processPID: pid_t = 0
             let pidStatus = AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID)
+            
             if pidStatus == noErr {
+                // Check if this PID has a responsible parent (e.g. Chrome Helper -> Chrome)
+                let responsiblePID = getResponsiblePID?(processPID) ?? processPID
+                activePIDs.insert(responsiblePID)
+                
+                // Also keep the original PID just in case
                 activePIDs.insert(processPID)
             }
         }

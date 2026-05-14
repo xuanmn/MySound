@@ -40,10 +40,17 @@ class AppManager: ObservableObject {
 
     static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
         let activeAudioPIDs = AudioTapManager.getAudioActivePIDs()
-        let runningApps = NSWorkspace.shared.runningApplications
-            .filter { app in
-                app.activationPolicy == .regular && activeAudioPIDs.contains(app.processIdentifier)
-            }
+        let allRunning = NSWorkspace.shared.runningApplications
+        
+        print("DEBUG: Total running apps in workspace: \(allRunning.count)")
+        
+        let runningApps = allRunning.filter { app in
+            let isRegular = app.activationPolicy == .regular
+            let isActive = activeAudioPIDs.contains(app.processIdentifier)
+            let isProducingSound = AudioEngineManager.shared.isPIDActive(app.processIdentifier)
+            
+            return isRegular && isActive && isProducingSound
+        }
 
         var newApps: [AppVolume] = []
         for app in runningApps {
@@ -125,6 +132,7 @@ struct VolumeControlView: View {
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
                 checkLaunchAtLoginStatus()
+                tapManager.startMonitoring()
                 
                 // Add a timer to keep system volume in sync if changed via hardware keys
                 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -143,23 +151,21 @@ struct VolumeControlView: View {
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
                     Text("No apps playing audio")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                         .padding()
                 } else {
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            ForEach($appManager.apps) { $app in
-                                AppVolumeRow(app: $app) { newVolume in
-                                    tapManager.setVolume(for: app.pid, volume: newVolume)
-                                }
+                    VStack(spacing: 12) {
+                        ForEach($appManager.apps) { $app in
+                            AppVolumeRow(app: $app) { newVolume in
+                                tapManager.setVolume(for: app.pid, volume: newVolume)
                             }
                         }
-                        .padding()
                     }
+                    .padding()
                 }
             }
-            .frame(width: 320)
-            .frame(minHeight: 100, maxHeight: 600)
+            .frame(width: 300)
             .onAppear {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps

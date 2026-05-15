@@ -6,7 +6,7 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 
 
-<img width="346" height="294" alt="ishare-1778743731-terminal" src="https://github.com/user-attachments/assets/9e9d70a5-27a6-4a52-b99e-41a46d2e98eb"/>
+<img width="346" height="294" alt="ishare-1778888377-google chrome" src="https://github.com/user-attachments/assets/e0fa557d-a717-4e3a-8557-156a0745f45f"/>
 
 ## ✨ Features
 

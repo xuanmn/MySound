@@ -4,8 +4,9 @@
 
 MySound gives you total control over your Mac's audio. Adjust the volume of individual applications like Chrome, Spotify, or Zoom independently of your system volume—all from a beautiful, minimalist menu bar interface.
 
-<img width="346" height="294" alt="ishare-1778743731-terminal" src="https://github.com/user-attachments/assets/9e9d70a5-27a6-4a52-b99e-41a46d2e98eb"/>
 
+
+<img width="346" height="294" alt="ishare-1778743731-terminal" src="https://github.com/user-attachments/assets/9e9d70a5-27a6-4a52-b99e-41a46d2e98eb"/>
 
 ## ✨ Features
 

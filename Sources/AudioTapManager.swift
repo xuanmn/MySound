@@ -6,6 +6,7 @@ import AppKit
 @_silgen_name("AudioHardwareCreateProcessTap")
 func AudioHardwareCreateProcessTap(_ description: CATapDescription, _ tapID: UnsafeMutablePointer<AudioObjectID>) -> OSStatus
 
+
 @_silgen_name("AudioHardwareDestroyProcessTap")
 func AudioHardwareDestroyProcessTap(_ tapID: AudioObjectID) -> OSStatus
 
@@ -24,7 +25,7 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     @Published var activeTaps: [pid_t: TapState] = [:]
-    
+
     private var volumes: [pid_t: Float] = [:]
     private let volumeLock = NSLock()
 
@@ -85,25 +86,25 @@ class AudioTapManager: NSObject, ObservableObject {
         var procID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { [weak self] (now, inputData, inputTime, outputData, outputTime) in
             guard let self = self else { return }
-            
+
             self.volumeLock.lock()
             let vol = self.volumes[pid] ?? 1.0
             self.volumeLock.unlock()
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
-            
+
             guard !inputs.isEmpty && !outputs.isEmpty else { return }
-            
+
             // Direct Zero-Latency Mix
             // We handle both interleaved and non-interleaved taps
             let inputBuf = inputs[0]
             let outputBuf = outputs[0]
-            
+
             if inputBuf.mNumberChannels == outputBuf.mNumberChannels && inputBuf.mDataByteSize == outputBuf.mDataByteSize {
                 guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self),
                       let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { return }
-                
+
                 let count = inputBuf.mDataByteSize / 4
                 for i in 0..<Int(count) {
                     dst[i] += src[i] * vol

@@ -1,4 +1,8 @@
-# 🎧 MySound
+<p align="center">
+  <img src="Resources/AppIcon.png" width="128" height="128" alt="MySound App Icon">
+</p>
+
+# MySound
 
 **The ultimate per-app volume controller for macOS.**
 
@@ -26,18 +30,25 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 ### Installation
 
-1. **Clone the repository**:
+**Option 1: Quick Install via Zip**
+1. Run the build script to compile and package the app:
+   ```bash
+   ./build.sh
+   ```
+2. You will find a standalone `MySound.zip` package in the `build/` directory.
+3. Share this `.zip` with anyone, or simply unzip it and drag `MySound.app` to your Applications folder.
+
+**Option 2: Build & Run Locally**
+1. Clone the repository:
    ```bash
    git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-
-2. **Build the app**:
+2. Build the app:
    ```bash
    ./build.sh
    ```
-
-3. **Run MySound**:
+3. Run MySound:
    ```bash
    open build/MySound.app
    ```

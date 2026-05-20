@@ -11,6 +11,12 @@ RESOURCES_DIR="${APP_BUNDLE}/Contents/Resources"
 rm -rf "$BUILD_DIR"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
+
+if [ -f "Resources/AppIcon.icns" ]; then
+    echo "Copying app icon..."
+    cp "Resources/AppIcon.icns" "${RESOURCES_DIR}/"
+fi
+
 echo "Compiling Swift files..."
 swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
 
@@ -28,6 +34,8 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
 <dict>
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
@@ -52,4 +60,17 @@ echo "Signing app..."
 codesign --force --sign - --entitlements Entitlements.plist "${APP_BUNDLE}"
 
 echo "Build complete. App bundle created at ${APP_BUNDLE}"
-echo "You can run it with: open ${APP_BUNDLE}"
+
+echo "Packaging app for distribution..."
+# Create a ZIP file for easy sharing
+pushd "${BUILD_DIR}" > /dev/null
+zip -r -q "${APP_NAME}.zip" "${APP_NAME}.app"
+popd > /dev/null
+
+echo "============================================================"
+echo "✅  Standalone package created at: ${BUILD_DIR}/${APP_NAME}.zip"
+echo "   You can send this .zip file to other users."
+echo "   They just need to unzip it and they can move the app"
+echo "   to their Applications folder to use it."
+echo "============================================================"
+echo "You can run it locally with: open ${APP_BUNDLE}"

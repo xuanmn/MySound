@@ -9,7 +9,6 @@ RESOURCES_DIR="${APP_BUNDLE}/Contents/Resources"
 
 # Clean previous build
 rm -rf "$BUILD_DIR"
-
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 echo "Compiling Swift files..."

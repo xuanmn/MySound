@@ -67,8 +67,11 @@ class UpdateManager: ObservableObject {
     private func fetchVersionJson() async -> UpdateInfo? {
         do {
             var request = URLRequest(url: versionURL)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            let (data, response) = try await URLSession.shared.data(for: request)
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let config = URLSessionConfiguration.ephemeral
+            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let session = URLSession(configuration: config)
+            let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
             return try JSONDecoder().decode(UpdateInfo.self, from: data)
         } catch {
@@ -80,8 +83,11 @@ class UpdateManager: ObservableObject {
         do {
             var request = URLRequest(url: githubApiURL)
             request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            let (data, response) = try await URLSession.shared.data(for: request)
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let config = URLSessionConfiguration.ephemeral
+            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let session = URLSession(configuration: config)
+            let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
             return try JSONDecoder().decode(GitHubRelease.self, from: data)
         } catch {

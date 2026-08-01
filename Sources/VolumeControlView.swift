@@ -29,22 +29,31 @@ class AppManager: ObservableObject {
         }
     }
 
+    // Fix 9: invalidate timer on deinit to prevent it firing after deallocation
+    deinit {
+        timer?.invalidate()
+    }
+
+    // Fix 8: run expensive work on a background task to avoid main-thread stalls
     @objc func updateApps(notification: Notification? = nil) {
-        let newApps = Self.getRunningApps(existingApps: self.apps)
-        DispatchQueue.main.async {
-            let currentPIDs = self.apps.map { $0.pid }
-            let newPIDs = newApps.map { $0.pid }
-            if currentPIDs != newPIDs {
-                self.apps = newApps
+        let existingApps = self.apps
+        Task.detached(priority: .utility) {
+            let newApps = Self.getRunningApps(existingApps: existingApps)
+            await MainActor.run {
+                let currentPIDs = self.apps.map { $0.pid }
+                let newPIDs = newApps.map { $0.pid }
+                if currentPIDs != newPIDs {
+                    self.apps = newApps
+                }
             }
         }
     }
 
-    static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
+    // Fix 11: removed extra blank line between allRunning and runningApps
+    // nonisolated allows calling this from a background Task.detached (Fix 8)
+    nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
         let activeAudioPIDs = AudioTapManager.getAudioActivePIDs()
         let allRunning = NSWorkspace.shared.runningApplications
-        
-        
         let runningApps = allRunning.filter { app in
             let isRegular = app.activationPolicy == .regular
             let isActive = activeAudioPIDs.contains(app.processIdentifier)
@@ -67,11 +76,13 @@ class AppManager: ObservableObject {
 struct VolumeControlView: View {
     @State private var masterVolume: Double = 0.5
     @State private var isLaunchAtLogin: Bool = false
+    // Fix 7: store sync timer so it can be cancelled on disappear
+    @State private var syncTimer: Timer?
 
-    // Use our new AppManager to supply live data
     @StateObject private var appManager = AppManager()
     @StateObject private var tapManager = AudioTapManager()
-    @StateObject private var updateManager = UpdateManager.shared
+    // Fix 10: consume UpdateManager via EnvironmentObject (injected from App.swift)
+    @EnvironmentObject private var updateManager: UpdateManager
 
     var body: some View {
         VStack(spacing: 0) {
@@ -131,8 +142,8 @@ struct VolumeControlView: View {
                 masterVolume = Double(tapManager.getSystemVolume())
                 checkLaunchAtLoginStatus()
                 
-                // Add a timer to keep system volume in sync if changed via hardware keys
-                Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                // Fix 7: store timer so it can be cancelled in onDisappear
+                syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
                     Task { @MainActor in
                         let current = Double(tapManager.getSystemVolume())
                         if abs(current - masterVolume) > 0.01 {
@@ -140,6 +151,11 @@ struct VolumeControlView: View {
                         }
                     }
                 }
+            }
+            .onDisappear {
+                // Fix 7: cancel timer when popup closes to prevent stacking
+                syncTimer?.invalidate()
+                syncTimer = nil
             }
 
             Divider()

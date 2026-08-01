@@ -1,11 +1,12 @@
 import Foundation
 import CoreAudio
 import AppKit
+import os
 
-// Declare private Core Audio functions
+// Declare private Core Audio functions (macOS 14.2+)
+#if canImport(CoreAudio)
 @_silgen_name("AudioHardwareCreateProcessTap")
 func AudioHardwareCreateProcessTap(_ description: CATapDescription, _ tapID: UnsafeMutablePointer<AudioObjectID>) -> OSStatus
-
 
 @_silgen_name("AudioHardwareDestroyProcessTap")
 func AudioHardwareDestroyProcessTap(_ tapID: AudioObjectID) -> OSStatus
@@ -15,6 +16,17 @@ func AudioHardwareCreateAggregateDevice(_ inDescription: CFDictionary, _ outDevi
 
 @_silgen_name("AudioHardwareDestroyAggregateDevice")
 func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatus
+#endif
+
+// Fix 4: Lightweight lock wrapper safe for use on real-time audio threads
+private struct UnfairLock {
+    private var _lock = os_unfair_lock_s()
+    mutating func lock() { os_unfair_lock_lock(&_lock) }
+    mutating func unlock() { os_unfair_lock_unlock(&_lock) }
+    mutating func withLock<T>(_ body: () -> T) -> T {
+        lock(); defer { unlock() }; return body()
+    }
+}
 
 @MainActor
 class AudioTapManager: NSObject, ObservableObject {
@@ -27,10 +39,17 @@ class AudioTapManager: NSObject, ObservableObject {
 
     @Published var activeTaps: [pid_t: TapState] = [:]
 
+    // Fix 2: Cache dlsym lookup once at init — avoids redundant symbol resolution on every call
+    private let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)?
+
+    // Fix 4: os_unfair_lock for audio-thread-safe volume reads
+    private var volumeLock = UnfairLock()
     private var volumes: [pid_t: Float] = [:]
-    private let volumeLock = NSLock()
 
     override init() {
+        // Fix 2: Resolve private SPI symbol once
+        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
+        self.getResponsiblePID = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         super.init()
         setupProcessListListener()
     }
@@ -60,18 +79,21 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     func setVolume(for pid: pid_t, volume: Float) {
-        volumeLock.lock()
-        volumes[pid] = volume
-        volumeLock.unlock()
+        // Fix 4: use UnfairLock wrapper
+        volumeLock.withLock { volumes[pid] = volume }
 
+        // Fix 3: already on @MainActor, call directly — no Task hop needed
         if activeTaps[pid] == nil {
-            Task { @MainActor in
-                createTap(for: pid)
-            }
+            createTap(for: pid)
         }
     }
 
     private func createTap(for pid: pid_t) {
+        // Fix 5: guard against running on unsupported macOS versions
+        guard #available(macOS 14.2, *) else {
+            print("MySound: Process taps require macOS 14.2 or later.")
+            return
+        }
         if activeTaps[pid] != nil { return }
 
         guard let outputDeviceUID = getDefaultOutputDeviceUID() else { return }
@@ -116,9 +138,8 @@ class AudioTapManager: NSObject, ObservableObject {
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { [weak self] (now, inputData, inputTime, outputData, outputTime) in
             guard let self = self else { return }
 
-            self.volumeLock.lock()
-            let vol = self.volumes[pid] ?? 1.0
-            self.volumeLock.unlock()
+            // Fix 4: os_unfair_lock is safe to use on the real-time audio thread
+            let vol = self.volumeLock.withLock { self.volumes[pid] ?? 1.0 }
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
@@ -162,7 +183,7 @@ class AudioTapManager: NSObject, ObservableObject {
         activeTaps.removeValue(forKey: pid)
     }
 
-    // ... (System volume helpers)
+    // MARK: - System Volume Helpers
     func setSystemVolume(_ volume: Float) {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -250,9 +271,7 @@ class AudioTapManager: NSObject, ObservableObject {
         let targetBundleID = targetApp?.bundleIdentifier
         let targetAppPath = targetApp?.bundleURL?.path
         let childPIDs = getChildPIDs(parentPID: targetPID)
-        
-        let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
-        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
+        // Fix 2: use pre-cached getResponsiblePID from init
         
         var matchingIDs: [AudioObjectID] = []
         for processID in processIDs {
@@ -286,15 +305,17 @@ class AudioTapManager: NSObject, ObservableObject {
         return nil
     }
 
-    static func getAudioActivePIDs() -> Set<pid_t> {
+    nonisolated static func getAudioActivePIDs() -> Set<pid_t> {
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
         let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
         var processIDs = [AudioObjectID](repeating: 0, count: count)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
-        let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
-        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
+        // Fix 2: Note — this is a static func so we resolve dlsym inline here;
+        // instance method calls use the cached self.getResponsiblePID instead.
+        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
+        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         var activePIDs = Set<pid_t>()
         let runningApps = NSWorkspace.shared.runningApplications
         for processID in processIDs {
@@ -306,7 +327,9 @@ class AudioTapManager: NSObject, ObservableObject {
                 activePIDs.insert(respPID)
                 activePIDs.insert(processPID)
                 
+                // Fix 1: use defer to guarantee deallocation even on early exit
                 let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
+                defer { pathBuffer.deallocate() }
                 let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
                 if pathLength > 0 {
                     let procPath = String(cString: pathBuffer)
@@ -316,7 +339,6 @@ class AudioTapManager: NSObject, ObservableObject {
                         }
                     }
                 }
-                pathBuffer.deallocate()
             }
         }
         return activePIDs

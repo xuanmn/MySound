@@ -27,6 +27,15 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Creating Info.plist..."
+
+# Fix 13: Read version dynamically from version.json instead of hardcoding "1.0.0"
+if [ -f "version.json" ]; then
+    APP_VERSION=$(python3 -c "import json,sys; print(json.load(open('version.json'))['version'])" 2>/dev/null || echo "1.0.0")
+else
+    APP_VERSION="1.0.0"
+fi
+echo "Building version: ${APP_VERSION}"
+
 cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,7 +52,7 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${APP_VERSION}</string>
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>

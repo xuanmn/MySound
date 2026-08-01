@@ -9,6 +9,6 @@
     <key>com.apple.security.app-sandbox</key>
     <false/>
     <key>com.apple.security.get-task-allow</key>
-    <true/>
+    <false/>
 </dict>
 </plist>

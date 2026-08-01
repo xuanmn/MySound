@@ -52,6 +52,7 @@ class AudioTapManager: NSObject, ObservableObject {
         let tapDescription = CATapDescription(stereoMixdownOfProcesses: objectIDs)
         tapDescription.uuid = UUID()
         tapDescription.muteBehavior = .muted
+        tapDescription.deviceUID = outputDeviceUID
         tapDescription.isPrivate = true
 
         var tapID: AudioObjectID = 0
@@ -188,6 +189,7 @@ class AudioTapManager: NSObject, ObservableObject {
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
         let targetApp = NSRunningApplication(processIdentifier: targetPID)
         let targetBundleID = targetApp?.bundleIdentifier
+        let targetAppPath = targetApp?.bundleURL?.path
         let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
         let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
         var matchingIDs: [AudioObjectID] = []
@@ -196,14 +198,30 @@ class AudioTapManager: NSObject, ObservableObject {
             var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
+                var matched = false
                 if processPID == targetPID || getResponsiblePID?(processPID) == targetPID {
-                    matchingIDs.append(processID)
+                    matched = true
                 } else if let targetBundleID = targetBundleID, let processBundleID = NSRunningApplication(processIdentifier: processPID)?.bundleIdentifier, processBundleID.hasPrefix(targetBundleID) {
+                    matched = true
+                } else if let targetAppPath = targetAppPath, let procPath = getPath(for: processPID), procPath.hasPrefix(targetAppPath) {
+                    matched = true
+                }
+                if matched {
                     matchingIDs.append(processID)
                 }
             }
         }
         return matchingIDs
+    }
+
+    private func getPath(for pid: pid_t) -> String? {
+        let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
+        defer { pathBuffer.deallocate() }
+        let pathLength = proc_pidpath(pid, pathBuffer, UInt32(MAXPATHLEN))
+        if pathLength > 0 {
+            return String(cString: pathBuffer)
+        }
+        return nil
     }
 
     static func getAudioActivePIDs() -> Set<pid_t> {
@@ -216,13 +234,27 @@ class AudioTapManager: NSObject, ObservableObject {
         let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
         let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
         var activePIDs = Set<pid_t>()
+        let runningApps = NSWorkspace.shared.runningApplications
         for processID in processIDs {
             var pidSize = UInt32(MemoryLayout<pid_t>.size)
             var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
-                activePIDs.insert(getResponsiblePID?(processPID) ?? processPID)
+                let respPID = getResponsiblePID?(processPID) ?? processPID
+                activePIDs.insert(respPID)
                 activePIDs.insert(processPID)
+                
+                let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
+                let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
+                if pathLength > 0 {
+                    let procPath = String(cString: pathBuffer)
+                    for app in runningApps {
+                        if let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
+                            activePIDs.insert(app.processIdentifier)
+                        }
+                    }
+                }
+                pathBuffer.deallocate()
             }
         }
         return activePIDs

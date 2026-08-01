@@ -112,7 +112,18 @@ class UpdateManager: ObservableObject {
     }
     
     private func isVersionNewer(newVersion: String, currentVersion: String) -> Bool {
-        return newVersion.compare(currentVersion, options: .numeric) == .orderedDescending
+        let newComponents = newVersion.split(separator: ".").compactMap { Int($0) }
+        let currentComponents = currentVersion.split(separator: ".").compactMap { Int($0) }
+        
+        let maxCount = max(newComponents.count, currentComponents.count)
+        for i in 0..<maxCount {
+            let newComponent = i < newComponents.count ? newComponents[i] : 0
+            let currentComponent = i < currentComponents.count ? currentComponents[i] : 0
+            
+            if newComponent > currentComponent { return true }
+            if newComponent < currentComponent { return false }
+        }
+        return false
     }
     
     private func showUpdateAlert(version: String, url: String) {

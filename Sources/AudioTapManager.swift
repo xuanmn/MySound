@@ -125,24 +125,22 @@ class AudioTapManager: NSObject, ObservableObject {
 
             guard !inputs.isEmpty && !outputs.isEmpty else { return }
 
-            // Direct Zero-Latency Mix
-            let inputBuf = inputs[0]
-            let outputBuf = outputs[0]
+            // Direct Zero-Latency Mix across all audio channel buffers
+            let minBuffers = min(inputs.count, outputs.count)
+            for bufIdx in 0..<minBuffers {
+                let inputBuf = inputs[bufIdx]
+                let outputBuf = outputs[bufIdx]
 
-            if inputBuf.mNumberChannels == outputBuf.mNumberChannels && inputBuf.mDataByteSize == outputBuf.mDataByteSize {
                 guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self),
-                      let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { return }
+                      let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { continue }
 
-                let count = inputBuf.mDataByteSize / 4
-                for i in 0..<Int(count) {
-                    dst[i] += src[i] * vol
-                }
-            } else {
-                guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self),
-                      let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { return }
-                let frames = min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4
-                for i in 0..<Int(frames) {
-                    dst[i] += src[i] * vol
+                let count = min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4
+                if vol == 0 {
+                    memset(dst, 0, Int(count * 4))
+                } else {
+                    for i in 0..<Int(count) {
+                        dst[i] += src[i] * vol
+                    }
                 }
             }
         }
@@ -171,8 +169,20 @@ class AudioTapManager: NSObject, ObservableObject {
         var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
             var vol = volume
-            var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
-            AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+            for element in [kAudioObjectPropertyElementMain, 1, 2] {
+                var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
+                if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
+                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+                }
+            }
+            
+            var isMuted: UInt32 = (volume == 0) ? 1 : 0
+            for element in [kAudioObjectPropertyElementMain, 1, 2] {
+                var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
+                if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
+                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &isMuted)
+                }
+            }
         }
     }
 

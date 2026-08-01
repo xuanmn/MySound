@@ -32,7 +32,11 @@ class AppManager: ObservableObject {
     @objc func updateApps(notification: Notification? = nil) {
         let newApps = Self.getRunningApps(existingApps: self.apps)
         DispatchQueue.main.async {
-            self.apps = newApps
+            let currentPIDs = self.apps.map { $0.pid }
+            let newPIDs = newApps.map { $0.pid }
+            if currentPIDs != newPIDs {
+                self.apps = newApps
+            }
         }
     }
 

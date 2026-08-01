@@ -22,12 +22,42 @@ class AudioTapManager: NSObject, ObservableObject {
         let tapID: AudioObjectID
         let aggregateID: AudioObjectID
         let procID: AudioDeviceIOProcID
+        let objectIDs: [AudioObjectID]
     }
 
     @Published var activeTaps: [pid_t: TapState] = [:]
 
     private var volumes: [pid_t: Float] = [:]
     private let volumeLock = NSLock()
+
+    override init() {
+        super.init()
+        setupProcessListListener()
+    }
+
+    private func setupProcessListListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.refreshActiveTaps()
+            }
+        }
+    }
+
+    private func refreshActiveTaps() {
+        for (pid, state) in activeTaps {
+            let currentObjectIDs = getAudioObjectIDs(for: pid)
+            if Set(currentObjectIDs) != Set(state.objectIDs) && !currentObjectIDs.isEmpty {
+                // Re-create tap with updated AudioObjectIDs
+                removeTap(for: pid)
+                createTap(for: pid)
+            }
+        }
+    }
 
     func setVolume(for pid: pid_t, volume: Float) {
         volumeLock.lock()
@@ -96,7 +126,6 @@ class AudioTapManager: NSObject, ObservableObject {
             guard !inputs.isEmpty && !outputs.isEmpty else { return }
 
             // Direct Zero-Latency Mix
-            // We handle both interleaved and non-interleaved taps
             let inputBuf = inputs[0]
             let outputBuf = outputs[0]
 
@@ -119,7 +148,7 @@ class AudioTapManager: NSObject, ObservableObject {
         }
 
         if status == noErr, let proc = procID {
-            activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc)
+            activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
             _ = AudioDeviceStart(aggID, proc)
         } else {
             _ = AudioHardwareDestroyAggregateDevice(aggID)
@@ -180,6 +209,25 @@ class AudioTapManager: NSObject, ObservableObject {
         return nil
     }
 
+    private func getChildPIDs(parentPID: pid_t) -> Set<pid_t> {
+        var pids = Set<pid_t>()
+        let bufferSize = proc_listchildpids(parentPID, nil, 0)
+        if bufferSize > 0 {
+            let count = Int(bufferSize) / MemoryLayout<pid_t>.size
+            var childPIDs = [pid_t](repeating: 0, count: count)
+            let actualSize = proc_listchildpids(parentPID, &childPIDs, bufferSize)
+            if actualSize > 0 {
+                let actualCount = Int(actualSize) / MemoryLayout<pid_t>.size
+                for i in 0..<actualCount {
+                    let child = childPIDs[i]
+                    pids.insert(child)
+                    pids.formUnion(getChildPIDs(parentPID: child))
+                }
+            }
+        }
+        return pids
+    }
+
     private func getAudioObjectIDs(for targetPID: pid_t) -> [AudioObjectID] {
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -187,11 +235,15 @@ class AudioTapManager: NSObject, ObservableObject {
         let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
         var processIDs = [AudioObjectID](repeating: 0, count: count)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
+        
         let targetApp = NSRunningApplication(processIdentifier: targetPID)
         let targetBundleID = targetApp?.bundleIdentifier
         let targetAppPath = targetApp?.bundleURL?.path
+        let childPIDs = getChildPIDs(parentPID: targetPID)
+        
         let respSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
         let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = respSymbol != nil ? unsafeBitCast(respSymbol, to: (@convention(c) (pid_t) -> pid_t).self) : nil
+        
         var matchingIDs: [AudioObjectID] = []
         for processID in processIDs {
             var pidSize = UInt32(MemoryLayout<pid_t>.size)
@@ -199,7 +251,7 @@ class AudioTapManager: NSObject, ObservableObject {
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
                 var matched = false
-                if processPID == targetPID || getResponsiblePID?(processPID) == targetPID {
+                if processPID == targetPID || childPIDs.contains(processPID) || getResponsiblePID?(processPID) == targetPID {
                     matched = true
                 } else if let targetBundleID = targetBundleID, let processBundleID = NSRunningApplication(processIdentifier: processPID)?.bundleIdentifier, processBundleID.hasPrefix(targetBundleID) {
                     matched = true

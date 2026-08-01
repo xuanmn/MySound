@@ -87,17 +87,35 @@ struct VolumeControlView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Update Banner
-            if updateManager.isUpdateAvailable {
-                Button(action: {
-                    if let url = updateManager.updateURL {
-                        NSWorkspace.shared.open(url)
+            if updateManager.isDownloading {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundColor(.blue)
+                        Text(updateManager.updateStatus ?? "Updating...")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.blue)
+                        Spacer()
                     }
+                    ProgressView(value: updateManager.downloadProgress)
+                        .progressViewStyle(.linear)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.blue.opacity(0.1))
+                Divider()
+            } else if updateManager.isUpdateAvailable {
+                Button(action: {
+                    updateManager.performInAppUpdate()
                 }) {
                     HStack {
                         Image(systemName: "arrow.down.circle.fill")
                         Text("Update Available (\(updateManager.latestVersion ?? ""))")
                         Spacer()
-                        Image(systemName: "chevron.right")
+                        Text("Update Now")
+                            .font(.caption)
+                            .fontWeight(.semibold)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -217,7 +235,7 @@ struct VolumeControlView: View {
                     Button("Check for Updates...") {
                         updateManager.checkForUpdates(manual: true)
                     }
-                    .disabled(updateManager.isChecking)
+                    .disabled(updateManager.isChecking || updateManager.isDownloading)
                 } label: {
                     Image(systemName: "gearshape.fill")
                         .foregroundColor(.secondary)

@@ -8,15 +8,27 @@ struct UpdateInfo: Codable {
     let releaseNotes: String?
 }
 
+struct GitHubAsset: Codable {
+    let name: String
+    let browserDownloadUrl: String
+    
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadUrl = "browser_download_url"
+    }
+}
+
 struct GitHubRelease: Codable {
     let tagName: String
     let htmlUrl: String
     let body: String?
+    let assets: [GitHubAsset]?
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case htmlUrl = "html_url"
         case body
+        case assets
     }
 }
 
@@ -28,13 +40,16 @@ class UpdateManager: ObservableObject {
     @Published var latestVersion: String?
     @Published var updateURL: URL?
     @Published var isChecking = false
+    @Published var isDownloading = false
+    @Published var downloadProgress: Double = 0.0
+    @Published var updateStatus: String?
     @Published var errorMessage: String?
     
     private let versionURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/version.json")!
     private let githubApiURL = URL(string: "https://api.github.com/repos/xuanmn/MySound/releases/latest")!
     
     func checkForUpdates(manual: Bool = false) {
-        guard !isChecking else { return }
+        guard !isChecking && !isDownloading else { return }
         
         isChecking = true
         errorMessage = nil
@@ -50,7 +65,8 @@ class UpdateManager: ObservableObject {
             // Second attempt: GitHub Releases API fallback
             if let release = await fetchGitHubRelease() {
                 let cleanVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                self.processUpdate(version: cleanVersion, downloadUrl: release.htmlUrl, manual: manual)
+                let zipAssetUrl = release.assets?.first(where: { $0.name.lowercased().hasSuffix(".zip") })?.browserDownloadUrl ?? release.htmlUrl
+                self.processUpdate(version: cleanVersion, downloadUrl: zipAssetUrl, manual: manual)
                 self.isChecking = false
                 return
             }
@@ -104,7 +120,7 @@ class UpdateManager: ObservableObject {
             self.updateURL = URL(string: downloadUrl)
             
             if manual {
-                self.showUpdateAlert(version: version, url: downloadUrl)
+                self.showUpdateAlert(version: version)
             }
         } else if manual {
             self.showNoUpdateAlert()
@@ -126,18 +142,136 @@ class UpdateManager: ObservableObject {
         return false
     }
     
-    private func showUpdateAlert(version: String, url: String) {
+    func performInAppUpdate() {
+        guard let downloadURL = updateURL, !isDownloading else { return }
+        
+        let zipURL: URL
+        if downloadURL.pathExtension.lowercased() == "zip" || downloadURL.absoluteString.contains("/releases/download/") {
+            zipURL = downloadURL
+        } else if downloadURL.absoluteString.contains("github.com/xuanmn/MySound/releases") {
+            if let ver = latestVersion {
+                zipURL = URL(string: "https://github.com/xuanmn/MySound/releases/download/v\(ver)/MySound.zip") ?? downloadURL
+            } else {
+                zipURL = URL(string: "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip") ?? downloadURL
+            }
+        } else {
+            zipURL = downloadURL
+        }
+
+        isDownloading = true
+        downloadProgress = 0.0
+        updateStatus = "Downloading update..."
+
+        Task {
+            do {
+                let (asyncBytes, response) = try await URLSession.shared.bytes(from: zipURL)
+                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                    throw NSError(domain: "UpdateError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to download update package (HTTP status \((response as? HTTPURLResponse)?.statusCode ?? 0))."])
+                }
+                
+                let expectedLength = response.expectedContentLength
+                let tempZipURL = FileManager.default.temporaryDirectory.appendingPathComponent("MySound_Update.zip")
+                
+                if FileManager.default.fileExists(atPath: tempZipURL.path) {
+                    try? FileManager.default.removeItem(at: tempZipURL)
+                }
+                
+                var data = Data()
+                if expectedLength > 0 {
+                    data.reserveCapacity(Int(expectedLength))
+                }
+                
+                for try await byte in asyncBytes {
+                    data.append(byte)
+                    if expectedLength > 0 {
+                        let progress = Double(data.count) / Double(expectedLength)
+                        await MainActor.run {
+                            self.downloadProgress = progress
+                            self.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
+                        }
+                    }
+                }
+                
+                try data.write(to: tempZipURL)
+                
+                await MainActor.run {
+                    self.updateStatus = "Extracting update..."
+                }
+                
+                let tempExtractDir = FileManager.default.temporaryDirectory.appendingPathComponent("MySound_Update_\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: tempExtractDir, withIntermediateDirectories: true)
+                
+                let dittoProcess = Process()
+                dittoProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                dittoProcess.arguments = ["-x", "-k", tempZipURL.path, tempExtractDir.path]
+                try dittoProcess.run()
+                dittoProcess.waitUntilExit()
+                
+                guard dittoProcess.terminationStatus == 0 else {
+                    throw NSError(domain: "UpdateError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to extract update package."])
+                }
+                
+                let fileManager = FileManager.default
+                let contents = try fileManager.contentsOfDirectory(atPath: tempExtractDir.path)
+                guard let appName = contents.first(where: { $0.hasSuffix(".app") }) else {
+                    throw NSError(domain: "UpdateError", code: 3, userInfo: [NSLocalizedDescriptionKey: "No .app bundle found inside update package."])
+                }
+                
+                let newAppPath = tempExtractDir.appendingPathComponent(appName).path
+                var currentAppPath = Bundle.main.bundlePath
+                if currentAppPath.hasPrefix("/Volumes/") {
+                    currentAppPath = "/Applications/MySound.app"
+                }
+                
+                let pid = ProcessInfo.processInfo.processIdentifier
+                
+                await MainActor.run {
+                    self.updateStatus = "Installing & Relaunching..."
+                }
+                
+                let relaunchScript = """
+                while kill -0 \(pid) 2>/dev/null; do
+                    sleep 0.2
+                done
+                rm -rf "\(currentAppPath)"
+                mv "\(newAppPath)" "\(currentAppPath)"
+                open "\(currentAppPath)"
+                rm -rf "\(tempExtractDir.path)"
+                rm -f "\(tempZipURL.path)"
+                """
+                
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                process.arguments = ["-c", relaunchScript]
+                try process.run()
+                
+                await MainActor.run {
+                    NSApplication.shared.terminate(nil)
+                }
+                
+            } catch {
+                await MainActor.run {
+                    self.isDownloading = false
+                    self.updateStatus = nil
+                    self.showErrorAlert(error: "Automatic update failed: \(error.localizedDescription)\n\nOpening download link in browser instead.")
+                    if let url = self.updateURL {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func showUpdateAlert(version: String) {
         let alert = NSAlert()
         alert.messageText = "Update Available"
-        alert.informativeText = "A new version (\(version)) of MySound is available. Would you like to download it?"
-        alert.addButton(withTitle: "Download")
+        alert.informativeText = "A new version (\(version)) of MySound is available. Would you like to update and restart now?"
+        alert.addButton(withTitle: "Update & Relaunch")
         alert.addButton(withTitle: "Later")
         
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            if let url = URL(string: url) {
-                NSWorkspace.shared.open(url)
-            }
+            performInAppUpdate()
         }
     }
     
@@ -151,9 +285,10 @@ class UpdateManager: ObservableObject {
     
     private func showErrorAlert(error: String) {
         let alert = NSAlert()
-        alert.messageText = "Update Check Failed"
+        alert.messageText = "Update Failed"
         alert.informativeText = error
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
 }
+

@@ -109,7 +109,10 @@ class AudioTapManager: NSObject, ObservableObject {
 
         var tapID: AudioObjectID = 0
         var status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        guard status == noErr else { return }
+        guard status == noErr else {
+            print("MySound: AudioHardwareCreateProcessTap failed for PID \(pid) with status: \(status)")
+            return
+        }
 
         let aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MySound-Tap-\(pid)" as NSString,
@@ -123,13 +126,14 @@ class AudioTapManager: NSObject, ObservableObject {
                 [kAudioSubDeviceUIDKey: outputDeviceUID as NSString, kAudioSubDeviceDriftCompensationKey: kCFBooleanTrue as Any]
             ] as NSArray,
             kAudioAggregateDeviceTapListKey: [
-                [kAudioSubTapUIDKey: tapDescription.uuid.uuidString as NSString, kAudioSubTapDriftCompensationKey: kCFBooleanTrue as Any]
+                [kAudioSubTapUIDKey: tapDescription.uuid.uuidString as NSString]
             ] as NSArray
         ]
 
         var aggID: AudioObjectID = 0
         status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
         guard status == noErr else {
+            print("MySound: AudioHardwareCreateAggregateDevice failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyProcessTap(tapID)
             return
         }
@@ -160,7 +164,7 @@ class AudioTapManager: NSObject, ObservableObject {
                     memset(dst, 0, Int(count * 4))
                 } else {
                     for i in 0..<Int(count) {
-                        dst[i] += src[i] * vol
+                        dst[i] = src[i] * vol
                     }
                 }
             }
@@ -170,6 +174,7 @@ class AudioTapManager: NSObject, ObservableObject {
             activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
             _ = AudioDeviceStart(aggID, proc)
         } else {
+            print("MySound: AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyAggregateDevice(aggID)
             _ = AudioHardwareDestroyProcessTap(tapID)
         }

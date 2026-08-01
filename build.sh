@@ -17,11 +17,25 @@ if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${RESOURCES_DIR}/"
 fi
 
-echo "Compiling Swift files..."
-swiftc -o "${MACOS_DIR}/${APP_NAME}" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
+echo "Compiling Swift files (Universal Binary arm64 + x86_64)..."
+swiftc -o "${MACOS_DIR}/${APP_NAME}_arm64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
+ARM64_STATUS=$?
 
-# Check if compile succeeded
-if [ $? -ne 0 ]; then
+swiftc -o "${MACOS_DIR}/${APP_NAME}_x86_64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target x86_64-apple-macos14.2
+X86_STATUS=$?
+
+if [ $ARM64_STATUS -eq 0 ] && [ $X86_STATUS -eq 0 ]; then
+    lipo -create -output "${MACOS_DIR}/${APP_NAME}" "${MACOS_DIR}/${APP_NAME}_arm64" "${MACOS_DIR}/${APP_NAME}_x86_64"
+    rm -f "${MACOS_DIR}/${APP_NAME}_arm64" "${MACOS_DIR}/${APP_NAME}_x86_64"
+elif [ $ARM64_STATUS -eq 0 ]; then
+    echo "Warning: x86_64 target failed, falling back to arm64 binary."
+    mv "${MACOS_DIR}/${APP_NAME}_arm64" "${MACOS_DIR}/${APP_NAME}"
+    rm -f "${MACOS_DIR}/${APP_NAME}_x86_64"
+elif [ $X86_STATUS -eq 0 ]; then
+    echo "Warning: arm64 target failed, falling back to x86_64 binary."
+    mv "${MACOS_DIR}/${APP_NAME}_x86_64" "${MACOS_DIR}/${APP_NAME}"
+    rm -f "${MACOS_DIR}/${APP_NAME}_arm64"
+else
     echo "Compilation failed!"
     exit 1
 fi

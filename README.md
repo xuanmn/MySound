@@ -8,59 +8,102 @@
 
 MySound gives you total control over your Mac's audio. Adjust the volume of individual applications like Chrome, Spotify, or Zoom independently of your system volume—all from a beautiful, minimalist menu bar interface.
 
+<p align="center">
+  <img src="Resources/preview.png" width="480" alt="MySound Menu Bar UI Preview">
+</p>
 
-<img width="346" height="294" alt="ishare-1778888377-google chrome" src="https://github.com/user-attachments/assets/e0fa557d-a717-4e3a-8557-156a0745f45f"/>
+---
 
 ## ✨ Features
 
-- **Per-App Volume Control**: Fine-tune the volume for every running application.
-- **Direct-Zero Architecture**: Zero-latency audio routing for perfect sync and crystal-clear sound.
-- **Smart App Grouping**: Automatically bundles sub-processes (like Chrome helpers) into a single control.
-- **Native Experience**: Built with Swift and SwiftUI to feel right at home on macOS.
-- **Dynamic Interface**: A sleek, translucent UI that adapts to your active apps.
-- **Launch at Login**: Ready to go the moment you start your Mac.
-- **Auto-Updates**: Built-in update manager to keep you on the latest version.
+- **Per-App Volume Control**: Fine-tune the volume for every running application independently.
+- **Direct-Zero CoreAudio Architecture**: Low-latency audio tap routing for perfect sync and crystal-clear sound.
+- **Smart App Detection**: Automatically lists active audio-producing applications and groups sub-processes.
+- **Native macOS Interface**: Built with Swift and SwiftUI with glassmorphism translucent styling.
+- **Launch at Login**: Starts automatically when your Mac turns on.
+- **Built-in Auto-Updater**: Check for new releases directly from the menu bar.
+- **Standalone DMG Installer**: Instant drag-and-drop installation into `/Applications`.
+
+---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- macOS 14.2 or later (Sonoma or Sequoia)
-- Apple Silicon (M1/M2/M3) recommended
+- macOS 14.2 (Sonoma) or macOS 15.0+ (Sequoia)
+- Apple Silicon (M1/M2/M3/M4) or Intel Mac
 
 ### Installation
 
-**Option 1: Quick Install via Zip**
-1. Run the build script to compile and package the app:
+#### Option 1: Quick Install via DMG (Recommended)
+1. Run `./build.sh` to package the app:
    ```bash
    ./build.sh
    ```
-2. You will find a standalone `MySound.zip` package in the `build/` directory.
-3. Share this `.zip` with anyone, or simply unzip it and drag `MySound.app` to your Applications folder.
+2. Open `build/MySound.dmg`.
+3. Drag **MySound** directly into your **Applications** folder.
 
-**Option 2: Build & Run Locally**
+#### Option 2: Build & Run Locally
 1. Clone the repository:
    ```bash
    git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-2. Build the app:
+2. Build the app bundle:
    ```bash
    ./build.sh
    ```
-3. Run MySound:
+3. Launch the app:
    ```bash
    open build/MySound.app
    ```
 
-### Permissions
-On first launch, macOS will ask for **Microphone Access**.
-> [!NOTE]
-> MySound **does not record your microphone**. It requires this permission to utilize the Core Audio "Tap" system for per-app volume routing.
+---
+
+## 🔒 Permissions & Privacy Guide
+
+MySound requires specific macOS permissions to intercept per-application audio streams. All audio processing is handled **100% locally on your Mac**.
+
+### 1. Microphone / Audio Recording Access
+On first launch, macOS will display a system prompt asking for **Microphone / System Audio Access**.
+
+> [!IMPORTANT]
+> **Privacy Guarantee**: MySound **does NOT record your microphone or store your audio**. macOS categorizes CoreAudio process taps (`CATapDescription`) under audio capture permissions. MySound only modifies sample volume gain in memory before outputting to your speakers.
+
+**How to grant permission:**
+1. Click **Allow** when the system prompt appears on first launch.
+2. If missed, open **System Settings** > **Privacy & Security** > **Microphone** (or **Screen & System Audio Recording** on macOS Sequoia).
+3. Ensure the toggle for **MySound** is switched **ON**.
+
+---
+
+### 2. Opening for the First Time (macOS Gatekeeper)
+Because MySound is built locally or self-signed, macOS Gatekeeper may show a warning:
+`"MySound cannot be opened because it is from an unidentified developer."`
+
+**How to bypass on first launch:**
+1. In Finder, navigate to your **Applications** folder.
+2. **Right-click** (or `Control` + click) on `MySound.app` and select **Open**.
+3. Click **Open** in the confirmation popup window.
+4. *Alternative*: Go to **System Settings** > **Privacy & Security**, scroll down to the *Security* section, and click **Open Anyway** next to MySound.
+
+---
+
+### 3. Launch at Login Permission
+When you enable **Launch at Login** in the gear menu, MySound registers a login item via Apple's `SMAppService` framework.
+
+**How to manage:**
+- Toggle **Launch at Login** directly from the MySound menu bar gear menu.
+- Or manage it in **System Settings** > **General** > **Login Items & Extensions**.
+
+---
 
 ## 🛠 Troubleshooting
 
-- **No sound?** Ensure that the app you want to control is actually playing audio.
-- **Distorted audio?** Try restarting the app or your output device. MySound automatically syncs with your hardware sample rate for the best quality.
+- **An app isn't appearing in the list?** MySound automatically detects applications when they start playing audio. Start playback in the app (e.g. play a song on Spotify or video on YouTube) and it will appear within 2 seconds.
+- **Volume slider doesn't change sound?** Ensure MySound has been granted Microphone/Audio Recording permissions under **System Settings > Privacy & Security > Microphone**.
+- **Audio distortion or lag?** MySound automatically matches your default audio output sample rate. Try restarting MySound or toggling your output device in System Settings.
+
+---
 
 ## 📜 License
 

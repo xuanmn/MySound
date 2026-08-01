@@ -67,10 +67,21 @@ pushd "${BUILD_DIR}" > /dev/null
 zip -r -q "${APP_NAME}.zip" "${APP_NAME}.app"
 popd > /dev/null
 
+# Create a DMG installer file with Applications drag-and-drop link
+echo "Creating DMG installer..."
+DMG_STAGE="${BUILD_DIR}/dmg_stage"
+rm -rf "$DMG_STAGE" "${BUILD_DIR}/${APP_NAME}.dmg"
+mkdir -p "$DMG_STAGE"
+cp -R "${APP_BUNDLE}" "$DMG_STAGE/"
+ln -s /Applications "$DMG_STAGE/Applications"
+hdiutil create -volname "${APP_NAME}" -srcfolder "$DMG_STAGE" -ov -format UDZO "${BUILD_DIR}/${APP_NAME}.dmg" > /dev/null
+rm -rf "$DMG_STAGE"
+
 echo "============================================================"
-echo "✅  Standalone package created at: ${BUILD_DIR}/${APP_NAME}.zip"
-echo "   You can send this .zip file to other users."
-echo "   They just need to unzip it and they can move the app"
-echo "   to their Applications folder to use it."
+echo "✅  DMG Installer created at: ${BUILD_DIR}/${APP_NAME}.dmg"
+echo "✅  ZIP Archive created at:   ${BUILD_DIR}/${APP_NAME}.zip"
+echo ""
+echo "   Users can double-click the .dmg file and drag ${APP_NAME}"
+echo "   directly into their Applications folder!"
 echo "============================================================"
 echo "You can run it locally with: open ${APP_BUNDLE}"

@@ -8,6 +8,18 @@ struct UpdateInfo: Codable {
     let releaseNotes: String?
 }
 
+struct GitHubRelease: Codable {
+    let tagName: String
+    let htmlUrl: String
+    let body: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlUrl = "html_url"
+        case body
+    }
+}
+
 @MainActor
 class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
@@ -18,8 +30,8 @@ class UpdateManager: ObservableObject {
     @Published var isChecking = false
     @Published var errorMessage: String?
     
-    // Replace this with your actual version.json URL (e.g. GitHub raw content)
     private let versionURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/version.json")!
+    private let githubApiURL = URL(string: "https://api.github.com/repos/xuanmn/MySound/releases/latest")!
     
     func checkForUpdates(manual: Bool = false) {
         guard !isChecking else { return }
@@ -28,43 +40,68 @@ class UpdateManager: ObservableObject {
         errorMessage = nil
         
         Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(from: versionURL)
-                
-                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                    self.isChecking = false
-                    if manual {
-                        self.showErrorAlert(error: "Could not find update file on server (404).")
-                    }
-                    return
-                }
-                
-                let updateInfo = try JSONDecoder().decode(UpdateInfo.self, from: data)
-                
-                let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-                
-                if self.isVersionNewer(newVersion: updateInfo.version, currentVersion: currentVersion) {
-                    self.isUpdateAvailable = true
-                    self.latestVersion = updateInfo.version
-                    self.updateURL = URL(string: updateInfo.downloadUrl)
-                    
-                    if manual {
-                        self.showUpdateAlert(version: updateInfo.version, url: updateInfo.downloadUrl)
-                    }
-                } else if manual {
-                    self.showNoUpdateAlert()
-                }
-                
+            // First attempt: version.json
+            if let updateInfo = await fetchVersionJson() {
+                self.processUpdate(version: updateInfo.version, downloadUrl: updateInfo.downloadUrl, manual: manual)
                 self.isChecking = false
-            } catch {
-                self.isChecking = false
-                if manual {
-                    self.errorMessage = error.localizedDescription
-                    self.showErrorAlert(error: error.localizedDescription)
-                } else {
-                    print("Update check: Remote version file not found or network offline.")
-                }
+                return
             }
+            
+            // Second attempt: GitHub Releases API fallback
+            if let release = await fetchGitHubRelease() {
+                let cleanVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+                self.processUpdate(version: cleanVersion, downloadUrl: release.htmlUrl, manual: manual)
+                self.isChecking = false
+                return
+            }
+            
+            self.isChecking = false
+            if manual {
+                self.showErrorAlert(error: "Could not fetch update info. Push version.json to your main branch or create a Release on GitHub.")
+            } else {
+                print("Update check: Remote version file not found on GitHub yet.")
+            }
+        }
+    }
+    
+    private func fetchVersionJson() async -> UpdateInfo? {
+        do {
+            var request = URLRequest(url: versionURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
+            return try JSONDecoder().decode(UpdateInfo.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+    
+    private func fetchGitHubRelease() async -> GitHubRelease? {
+        do {
+            var request = URLRequest(url: githubApiURL)
+            request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
+            return try JSONDecoder().decode(GitHubRelease.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+    
+    private func processUpdate(version: String, downloadUrl: String, manual: Bool) {
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        
+        if isVersionNewer(newVersion: version, currentVersion: currentVersion) {
+            self.isUpdateAvailable = true
+            self.latestVersion = version
+            self.updateURL = URL(string: downloadUrl)
+            
+            if manual {
+                self.showUpdateAlert(version: version, url: downloadUrl)
+            }
+        } else if manual {
+            self.showNoUpdateAlert()
         }
     }
     
@@ -98,7 +135,7 @@ class UpdateManager: ObservableObject {
     private func showErrorAlert(error: String) {
         let alert = NSAlert()
         alert.messageText = "Update Check Failed"
-        alert.informativeText = "There was an error checking for updates: \(error)"
+        alert.informativeText = error
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }

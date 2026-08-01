@@ -1,5 +1,5 @@
 import Foundation
-import SwiftUI
+import Combine
 import AppKit
 
 struct UpdateInfo: Codable {

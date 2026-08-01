@@ -1,11 +1,9 @@
 import SwiftUI
 import AppKit
-import CoreAudio
 import ServiceManagement
 
 struct AppVolume: Identifiable {
     var id: Int32 { pid } // Use PID as unique ID
-    let bundleId: String
     let pid: pid_t
     let name: String
     let icon: NSImage
@@ -26,12 +24,12 @@ class AppManager: ObservableObject {
         // Periodically refresh to catch apps that start/stop playing audio
         self.timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.updateApps(notification: Notification(name: NSWorkspace.didLaunchApplicationNotification))
+                self?.updateApps()
             }
         }
     }
 
-    @objc func updateApps(notification: Notification) {
+    @objc func updateApps(notification: Notification? = nil) {
         let newApps = Self.getRunningApps(existingApps: self.apps)
         DispatchQueue.main.async {
             self.apps = newApps
@@ -51,12 +49,11 @@ class AppManager: ObservableObject {
 
         var newApps: [AppVolume] = []
         for app in runningApps {
-            guard let bundleIdentifier = app.bundleIdentifier,
-                  let name = app.localizedName,
+            guard let name = app.localizedName,
                   let icon = app.icon else { continue }
 
             let existingVolume = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume ?? 1.0
-            newApps.append(AppVolume(bundleId: bundleIdentifier, pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
+            newApps.append(AppVolume(pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
         }
 
         return newApps.sorted(by: { $0.name < $1.name })
@@ -129,7 +126,6 @@ struct VolumeControlView: View {
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
                 checkLaunchAtLoginStatus()
-                tapManager.startMonitoring()
                 
                 // Add a timer to keep system volume in sync if changed via hardware keys
                 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in

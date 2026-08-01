@@ -41,8 +41,6 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
-    func startMonitoring() {}
-
     private func createTap(for pid: pid_t) {
         if activeTaps[pid] != nil { return }
 

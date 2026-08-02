@@ -113,6 +113,23 @@ class AudioTapManager: NSObject, ObservableObject {
         setupHardwareListeners()
     }
 
+    func getMainAppPID(for targetPID: pid_t) -> pid_t {
+        if let app = NSRunningApplication(processIdentifier: targetPID), app.activationPolicy == .regular {
+            return targetPID
+        }
+        if let respPID = getResponsiblePID?(targetPID), let app = NSRunningApplication(processIdentifier: respPID), app.activationPolicy == .regular {
+            return respPID
+        }
+        if let procPath = getPath(for: targetPID) {
+            for app in NSWorkspace.shared.runningApplications {
+                if app.activationPolicy == .regular, let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
+                    return app.processIdentifier
+                }
+            }
+        }
+        return targetPID
+    }
+
     private func setupProcessListListener() {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
@@ -122,7 +139,6 @@ class AudioTapManager: NSObject, ObservableObject {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshActiveTaps()
-                self?.ensureTapsForAudioProcesses()
             }
         }
         // Bug #7 fix: save address so we can remove the listener in deinit
@@ -158,8 +174,20 @@ class AudioTapManager: NSObject, ObservableObject {
     func refreshOutputDevices() {
         let devices = getAvailableOutputDevices()
         let current = getDefaultOutputDevice()
+        let deviceChanged = self.currentOutputDevice?.uid != current?.uid
         self.availableOutputDevices = devices
         self.currentOutputDevice = current
+        if deviceChanged && current != nil {
+            recreateAllTaps()
+        }
+    }
+
+    func recreateAllTaps() {
+        let currentPIDs = Array(activeTaps.keys)
+        removeAllTaps()
+        for pid in currentPIDs {
+            createTap(for: pid)
+        }
     }
 
     private func refreshActiveTaps() {
@@ -176,34 +204,43 @@ class AudioTapManager: NSObject, ObservableObject {
     func ensureTapsForAudioProcesses() {
         let rawPIDs = Self.getRawProcessPIDs()
         for pid in rawPIDs {
-            if activeTaps[pid] == nil {
-                createTap(for: pid)
+            let mainPID = getMainAppPID(for: pid)
+            if activeTaps[mainPID] == nil {
+                createTap(for: mainPID)
             }
         }
     }
 
-    func setVolume(for pid: pid_t, volume: Float) {
-        // Bug #2/#3 fix: use VolumeStore (class-based, RT-safe)
-        volumeStore.set(pid, volume)
+    func setVolume(for targetPID: pid_t, volume: Float) {
+        let mainPID = getMainAppPID(for: targetPID)
+        volumeStore.set(mainPID, volume)
 
-        // Fix 3: already on @MainActor, call directly — no Task hop needed
-        if activeTaps[pid] == nil {
-            createTap(for: pid)
+        if activeTaps[mainPID] == nil {
+            createTap(for: mainPID)
         }
     }
 
-    private func createTap(for pid: pid_t) {
+    private func createTap(for targetPID: pid_t) {
         // Fix 5: guard against running on unsupported macOS versions
         guard #available(macOS 14.2, *) else {
             print("MySound: Process taps require macOS 14.2 or later.")
             return
         }
+        let pid = getMainAppPID(for: targetPID)
         if activeTaps[pid] != nil { return }
 
         guard let outputDeviceUID = getDefaultOutputDeviceUID() else { return }
 
         let objectIDs = getAudioObjectIDs(for: pid)
+        NSLog("MySound DEBUG: createTap for PID %d -> found %d AudioObjectIDs", pid, objectIDs.count)
         guard !objectIDs.isEmpty else { return }
+
+        // Check if any of these objectIDs are already tapped by another activeTap
+        let allTappedObjectIDs = Set(activeTaps.values.flatMap { $0.objectIDs })
+        if !Set(objectIDs).isDisjoint(with: allTappedObjectIDs) {
+            NSLog("MySound DEBUG: Skipping tap for PID %d - objectIDs already tapped.", pid)
+            return
+        }
 
         let tapDescription = CATapDescription(stereoMixdownOfProcesses: objectIDs)
         tapDescription.uuid = UUID()
@@ -213,8 +250,9 @@ class AudioTapManager: NSObject, ObservableObject {
 
         var tapID: AudioObjectID = 0
         var status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
+        NSLog("MySound DEBUG: AudioHardwareCreateProcessTap for PID %d returned status %d, tapID %d", pid, status, tapID)
         guard status == noErr else {
-            print("MySound: AudioHardwareCreateProcessTap failed for PID \(pid) with status: \(status)")
+            NSLog("MySound: AudioHardwareCreateProcessTap failed for PID %d with status: %d.", pid, status)
             return
         }
 
@@ -256,8 +294,9 @@ class AudioTapManager: NSObject, ObservableObject {
 
         // Bug #1 fix: Force the aggregate device's input stream to Float32
         // so the IO proc callback always receives Float32 samples.
-        // On Intel Macs, the native format may be Float64, causing the
-        // volume multiplication to operate on misinterpreted data.
+        // IMPORTANT: Only set on INPUT scope. Do NOT touch the output scope —
+        // changing the output format breaks the output device's native format
+        // and causes complete audio silence.
         var currentFormat = AudioStreamBasicDescription()
         var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var formatAddr = AudioObjectPropertyAddress(
@@ -296,6 +335,8 @@ class AudioTapManager: NSObject, ObservableObject {
             guard !inputs.isEmpty && !outputs.isEmpty else { return }
 
             // Direct Zero-Latency Mix across all audio channel buffers
+            // Uses buffer-for-buffer copy to match the native HAL layout
+            // (typically non-interleaved on macOS)
             let minBuffers = min(inputs.count, outputs.count)
             var hasActiveAudio = false
             for bufIdx in 0..<minBuffers {
@@ -305,21 +346,26 @@ class AudioTapManager: NSObject, ObservableObject {
                 guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self),
                       let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { continue }
 
-                let count = min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4
+                let count = Int(min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4)
                 if vol == 0 {
-                    for i in 0..<Int(count) {
+                    for i in 0..<count {
                         if abs(src[i]) > 0.0005 {
                             hasActiveAudio = true
                         }
                     }
-                    memset(dst, 0, Int(count * 4))
+                    memset(dst, 0, Int(outputBuf.mDataByteSize))
                 } else {
-                    for i in 0..<Int(count) {
+                    for i in 0..<count {
                         let sample = src[i]
                         dst[i] = sample * vol
                         if abs(sample) > 0.0005 {
                             hasActiveAudio = true
                         }
+                    }
+                    // Zero any extra bytes in output buffer tail
+                    if outputBuf.mDataByteSize > inputBuf.mDataByteSize {
+                        let extraBytes = Int(outputBuf.mDataByteSize - inputBuf.mDataByteSize)
+                        memset(dst.advanced(by: count), 0, extraBytes)
                     }
                 }
             }
@@ -330,7 +376,14 @@ class AudioTapManager: NSObject, ObservableObject {
 
         if status == noErr, let proc = procID {
             activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
-            _ = AudioDeviceStart(aggID, proc)
+            let startStatus = AudioDeviceStart(aggID, proc)
+            if startStatus != noErr {
+                print("MySound: AudioDeviceStart failed for PID \(pid) with status: \(startStatus)")
+                activeTaps.removeValue(forKey: pid)
+                _ = AudioDeviceDestroyIOProcID(aggID, proc)
+                _ = AudioHardwareDestroyAggregateDevice(aggID)
+                _ = AudioHardwareDestroyProcessTap(tapID)
+            }
         } else {
             print("MySound: AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyAggregateDevice(aggID)

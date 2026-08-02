@@ -48,7 +48,7 @@ final class AudioActivityTracker: @unchecked Sendable {
         os_unfair_lock_unlock(&_lock)
     }
 
-    func isAudioActive(for pid: pid_t, window: TimeInterval = 0.25) -> Bool {
+    func isAudioActive(for pid: pid_t, window: TimeInterval = 2.5) -> Bool {
         let now = CFAbsoluteTimeGetCurrent()
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
@@ -738,15 +738,68 @@ class AudioTapManager: NSObject, ObservableObject {
         return rawPIDs
     }
 
-    nonisolated static func getAudioActivePIDs(onlyPlayingAudio: Bool = true) -> Set<pid_t> {
-        let rawPIDs = getRawProcessPIDs()
-        if !onlyPlayingAudio {
-            return rawPIDs
+    nonisolated static func isProcessRunningOutput(_ processID: AudioObjectID) -> Bool {
+        var isRunning: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        // 'piro' = kAudioProcessPropertyIsRunningOutput
+        var addr = AudioObjectPropertyAddress(
+            mSelector: AudioObjectPropertySelector(0x7069726f),
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        if AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &isRunning) == noErr {
+            return isRunning != 0
         }
+        return false
+    }
+
+    nonisolated static func getAudioActivePIDs(onlyPlayingAudio: Bool = true) -> Set<pid_t> {
+        var processListSize: UInt32 = 0
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
+        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
+        var processIDs = [AudioObjectID](repeating: 0, count: count)
+        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
+
+        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
+        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         var activePIDs = Set<pid_t>()
-        for pid in rawPIDs {
-            if activityTracker.isAudioActive(for: pid) {
-                activePIDs.insert(pid)
+        let runningApps = NSWorkspace.shared.runningApplications
+
+        for processID in processIDs {
+            var pidSize = UInt32(MemoryLayout<pid_t>.size)
+            var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var processPID: pid_t = 0
+            if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
+                let respPID = getResponsiblePID?(processPID) ?? processPID
+
+                let isHardwarePlaying = isProcessRunningOutput(processID)
+                if isHardwarePlaying {
+                    activityTracker.recordActivity(for: processPID)
+                    activityTracker.recordActivity(for: respPID)
+                }
+
+                let isRecentlyActive = !onlyPlayingAudio || activityTracker.isAudioActive(for: processPID, window: 2.5) || activityTracker.isAudioActive(for: respPID, window: 2.5)
+
+                if isRecentlyActive {
+                    activePIDs.insert(respPID)
+                    activePIDs.insert(processPID)
+
+                    let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
+                    defer { pathBuffer.deallocate() }
+                    let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
+                    if pathLength > 0 {
+                        let procPath = String(cString: pathBuffer)
+                        for app in runningApps {
+                            if let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
+                                if isHardwarePlaying {
+                                    activityTracker.recordActivity(for: app.processIdentifier)
+                                }
+                                activePIDs.insert(app.processIdentifier)
+                            }
+                        }
+                    }
+                }
             }
         }
         return activePIDs

@@ -22,7 +22,7 @@ class AppManager: ObservableObject {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         
         // Periodically refresh to catch apps that start/stop playing audio
-        self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        self.timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateApps()
             }
@@ -59,7 +59,7 @@ class AppManager: ObservableObject {
     // Fix 11: removed extra blank line between allRunning and runningApps
     // nonisolated allows calling this from a background Task.detached (Fix 8)
     nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
-        let activeAudioPIDs = AudioTapManager.getAudioActivePIDs(onlyPlayingAudio: false)
+        let activeAudioPIDs = AudioTapManager.getAudioActivePIDs(onlyPlayingAudio: true)
         let allRunning = NSWorkspace.shared.runningApplications
         let runningApps = allRunning.filter { app in
             let isRegular = app.activationPolicy == .regular
@@ -303,11 +303,6 @@ struct VolumeControlView: View {
                             .font(.subheadline)
                             .fontWeight(.semibold)
                             .foregroundColor(.primary)
-                        Text("Applications actively playing sound will automatically appear here.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
                     }
                     .padding(.vertical, 32)
                     .transition(.opacity)

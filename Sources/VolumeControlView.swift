@@ -358,11 +358,7 @@ struct VolumeControlView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(isQuitHovered ? Color.red.opacity(0.1) : Color.clear)
-                    .overlay(
-                        Rectangle()
-                            .stroke(isQuitHovered ? Color.red.opacity(0.3) : Color.clear, lineWidth: 1)
-                    )
-                    .cornerRadius(0)
+                    .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("q", modifiers: .command)
@@ -399,11 +395,7 @@ struct VolumeControlView: View {
                         .foregroundColor(isGearHovered ? .primary : .secondary)
                         .padding(6)
                         .background(isGearHovered ? Color.primary.opacity(0.08) : Color.clear)
-                        .overlay(
-                            Rectangle()
-                                .stroke(isGearHovered ? Color.primary.opacity(0.15) : Color.clear, lineWidth: 1)
-                        )
-                        .clipShape(Rectangle())
+                        .clipShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
                 .accessibilityLabel("Settings")
@@ -537,11 +529,7 @@ struct AppVolumeRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
-        .overlay(
-            Rectangle()
-                .stroke(isHovered ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 1)
-        )
-        .cornerRadius(0)
+        .cornerRadius(6)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) {
                 isHovered = hovering
@@ -561,7 +549,8 @@ struct BoxySlider: View {
     var range: ClosedRange<Double> = 0...1
     var tint: Color = .blue
     var trackHeight: CGFloat = 2
-    var thumbSize: CGFloat = 12
+    var thumbWidth: CGFloat = 20
+    var thumbHeight: CGFloat = 12
 
     @State private var isHovered: Bool = false
     @State private var isDragging: Bool = false
@@ -569,10 +558,10 @@ struct BoxySlider: View {
     var body: some View {
         GeometryReader { geometry in
             let totalWidth = geometry.size.width
-            let usableWidth = max(totalWidth - thumbSize, 1)
+            let usableWidth = max(totalWidth - thumbWidth, 1)
             let percent = max(0, min(1, CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))))
             let thumbX = percent * usableWidth
-            let fillWidth = percent * usableWidth + (thumbSize / 2)
+            let fillWidth = percent * usableWidth + (thumbWidth / 2)
 
             ZStack(alignment: .leading) {
                 // Background Track (Ultra-Skinny Bar)
@@ -585,18 +574,18 @@ struct BoxySlider: View {
                     .fill(tint)
                     .frame(width: fillWidth, height: trackHeight)
 
-                // Original Circular Thumb Knob
-                Circle()
-                    .fill(Color(NSColor.controlBackgroundColor))
+                // Horizontal Pill / Capsule Thumb Handle (matching screenshot)
+                Capsule()
+                    .fill(Color(white: 0.92))
                     .overlay(
-                        Circle()
-                            .stroke(isDragging || isHovered ? tint : Color.primary.opacity(0.4), lineWidth: 1.25)
+                        Capsule()
+                            .stroke(isDragging || isHovered ? tint : Color.black.opacity(0.12), lineWidth: 1)
                     )
-                    .shadow(color: Color.black.opacity(0.2), radius: 1.5, x: 0, y: 1)
-                    .frame(width: thumbSize, height: thumbSize)
+                    .shadow(color: Color.black.opacity(0.25), radius: 1.5, x: 0, y: 1)
+                    .frame(width: thumbWidth, height: thumbHeight)
                     .offset(x: thumbX)
             }
-            .frame(height: max(thumbSize + 4, 16), alignment: .center)
+            .frame(height: max(thumbHeight + 4, 16), alignment: .center)
             .contentShape(Rectangle())
             .onHover { hovering in
                 isHovered = hovering
@@ -605,7 +594,7 @@ struct BoxySlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         isDragging = true
-                        let locationX = gesture.location.x - (thumbSize / 2)
+                        let locationX = gesture.location.x - (thumbWidth / 2)
                         let newPercent = max(0, min(1, locationX / usableWidth))
                         let newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
                         value = newValue
@@ -615,7 +604,7 @@ struct BoxySlider: View {
                     }
             )
         }
-        .frame(height: max(thumbSize + 4, 16))
+        .frame(height: max(thumbHeight + 4, 16))
     }
 }
 

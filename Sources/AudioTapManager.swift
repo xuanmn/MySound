@@ -21,8 +21,6 @@ func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatu
 // Bug #3 fix: Shared volume store — Sendable, not actor-isolated,
 // safe for the real-time audio thread to read from.
 final class VolumeStore: @unchecked Sendable {
-    // Bug #2 fix: Using a class (not struct) so os_unfair_lock has a
-    // stable memory address and reference semantics.
     private var _lock = os_unfair_lock_s()
     private var volumes: [pid_t: Float] = [:]
 
@@ -36,6 +34,44 @@ final class VolumeStore: @unchecked Sendable {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
         volumes[pid] = volume
+    }
+}
+
+final class AudioActivityTracker: @unchecked Sendable {
+    private var _lock = os_unfair_lock_s()
+    private var lastActivity: [pid_t: CFAbsoluteTime] = [:]
+    private var tapCreationTime: [pid_t: CFAbsoluteTime] = [:]
+
+    func recordActivity(for pid: pid_t) {
+        let now = CFAbsoluteTimeGetCurrent()
+        os_unfair_lock_lock(&_lock)
+        lastActivity[pid] = now
+        os_unfair_lock_unlock(&_lock)
+    }
+
+    func recordTapCreated(for pid: pid_t) {
+        let now = CFAbsoluteTimeGetCurrent()
+        os_unfair_lock_lock(&_lock)
+        tapCreationTime[pid] = now
+        os_unfair_lock_unlock(&_lock)
+    }
+
+    func isAudioActive(for pid: pid_t, timeout: TimeInterval = 3.0, gracePeriod: TimeInterval = 2.5) -> Bool {
+        let now = CFAbsoluteTimeGetCurrent()
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        if let created = tapCreationTime[pid], (now - created) < gracePeriod {
+            return true
+        }
+        guard let last = lastActivity[pid] else { return false }
+        return (now - last) <= timeout
+    }
+
+    func remove(pid: pid_t) {
+        os_unfair_lock_lock(&_lock)
+        lastActivity.removeValue(forKey: pid)
+        tapCreationTime.removeValue(forKey: pid)
+        os_unfair_lock_unlock(&_lock)
     }
 }
 
@@ -72,6 +108,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
     // Bug #2/#3 fix: VolumeStore is a class with its own lock, safe for real-time audio threads
     let volumeStore = VolumeStore()
+    nonisolated static let activityTracker = AudioActivityTracker()
 
     // Bug #7 fix: store the property listener addresses so we can remove them on deinit
     private var processListListenerAddress: AudioObjectPropertyAddress?
@@ -97,6 +134,7 @@ class AudioTapManager: NSObject, ObservableObject {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshActiveTaps()
+                self?.ensureTapsForAudioProcesses()
             }
         }
         // Bug #7 fix: save address so we can remove the listener in deinit
@@ -142,6 +180,15 @@ class AudioTapManager: NSObject, ObservableObject {
             if Set(currentObjectIDs) != Set(state.objectIDs) && !currentObjectIDs.isEmpty {
                 // Re-create tap with updated AudioObjectIDs
                 removeTap(for: pid)
+                createTap(for: pid)
+            }
+        }
+    }
+
+    func ensureTapsForAudioProcesses() {
+        let rawPIDs = Self.getRawProcessPIDs()
+        for pid in rawPIDs {
+            if activeTaps[pid] == nil {
                 createTap(for: pid)
             }
         }
@@ -262,6 +309,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
             // Direct Zero-Latency Mix across all audio channel buffers
             let minBuffers = min(inputs.count, outputs.count)
+            var hasActiveAudio = false
             for bufIdx in 0..<minBuffers {
                 let inputBuf = inputs[bufIdx]
                 let outputBuf = outputs[bufIdx]
@@ -271,17 +319,30 @@ class AudioTapManager: NSObject, ObservableObject {
 
                 let count = min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4
                 if vol == 0 {
+                    for i in 0..<Int(count) {
+                        if abs(src[i]) > 0.0005 {
+                            hasActiveAudio = true
+                        }
+                    }
                     memset(dst, 0, Int(count * 4))
                 } else {
                     for i in 0..<Int(count) {
-                        dst[i] = src[i] * vol
+                        let sample = src[i]
+                        dst[i] = sample * vol
+                        if abs(sample) > 0.0005 {
+                            hasActiveAudio = true
+                        }
                     }
                 }
+            }
+            if hasActiveAudio {
+                AudioTapManager.activityTracker.recordActivity(for: pid)
             }
         }
 
         if status == noErr, let proc = procID {
             activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
+            Self.activityTracker.recordTapCreated(for: pid)
             _ = AudioDeviceStart(aggID, proc)
         } else {
             print("MySound: AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")
@@ -297,6 +358,7 @@ class AudioTapManager: NSObject, ObservableObject {
         _ = AudioDeviceDestroyIOProcID(state.aggregateID, state.procID)
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
+        Self.activityTracker.remove(pid: pid)
         activeTaps.removeValue(forKey: pid)
     }
 
@@ -599,18 +661,17 @@ class AudioTapManager: NSObject, ObservableObject {
         return nil
     }
 
-    nonisolated static func getAudioActivePIDs() -> Set<pid_t> {
+    nonisolated static func getRawProcessPIDs() -> Set<pid_t> {
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
         let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
         var processIDs = [AudioObjectID](repeating: 0, count: count)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
-        // Fix 2: Note — this is a static func so we resolve dlsym inline here;
-        // instance method calls use the cached self.getResponsiblePID instead.
+
         let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
         let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
-        var activePIDs = Set<pid_t>()
+        var rawPIDs = Set<pid_t>()
         let runningApps = NSWorkspace.shared.runningApplications
         for processID in processIDs {
             var pidSize = UInt32(MemoryLayout<pid_t>.size)
@@ -618,10 +679,9 @@ class AudioTapManager: NSObject, ObservableObject {
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
                 let respPID = getResponsiblePID?(processPID) ?? processPID
-                activePIDs.insert(respPID)
-                activePIDs.insert(processPID)
-                
-                // Fix 1: use defer to guarantee deallocation even on early exit
+                rawPIDs.insert(respPID)
+                rawPIDs.insert(processPID)
+
                 let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
                 defer { pathBuffer.deallocate() }
                 let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
@@ -629,10 +689,24 @@ class AudioTapManager: NSObject, ObservableObject {
                     let procPath = String(cString: pathBuffer)
                     for app in runningApps {
                         if let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
-                            activePIDs.insert(app.processIdentifier)
+                            rawPIDs.insert(app.processIdentifier)
                         }
                     }
                 }
+            }
+        }
+        return rawPIDs
+    }
+
+    nonisolated static func getAudioActivePIDs(onlyPlayingAudio: Bool = true) -> Set<pid_t> {
+        let rawPIDs = getRawProcessPIDs()
+        if !onlyPlayingAudio {
+            return rawPIDs
+        }
+        var activePIDs = Set<pid_t>()
+        for pid in rawPIDs {
+            if activityTracker.isAudioActive(for: pid) {
+                activePIDs.insert(pid)
             }
         }
         return activePIDs

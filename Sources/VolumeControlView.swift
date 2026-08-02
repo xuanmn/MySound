@@ -22,7 +22,7 @@ class AppManager: ObservableObject {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         
         // Periodically refresh to catch apps that start/stop playing audio
-        self.timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateApps()
             }
@@ -295,21 +295,22 @@ struct VolumeControlView: View {
             // App Volumes
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "speaker.wave.1.slash")
-                            .font(.system(size: 24))
+                    VStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.2.slash.fill")
+                            .font(.system(size: 28))
                             .foregroundColor(.secondary.opacity(0.6))
-                        Text("No Active Audio Apps")
+                        Text("No Audio Playing")
                             .font(.subheadline)
-                            .fontWeight(.medium)
+                            .fontWeight(.semibold)
                             .foregroundColor(.primary)
-                        Text("Apps actively playing sound will automatically appear here.")
+                        Text("Applications actively playing sound will automatically appear here.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 20)
                     }
-                    .padding(.vertical, 24)
+                    .padding(.vertical, 32)
+                    .transition(.opacity)
                 } else {
                     VStack(spacing: 8) {
                         ForEach($appManager.apps) { $app in
@@ -320,10 +321,13 @@ struct VolumeControlView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
+                    .transition(.opacity)
                 }
             }
             .frame(width: 300)
+            .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
+                tapManager.ensureTapsForAudioProcesses()
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
             }

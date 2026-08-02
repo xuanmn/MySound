@@ -35,11 +35,16 @@ class AppManager: ObservableObject {
     }
 
     // Fix 8: run expensive work on a background task to avoid main-thread stalls
+    // Bug #8 fix: debounce to prevent overlapping timer fires from racing
+    private var pendingUpdate: DispatchWorkItem?
+
     @objc func updateApps(notification: Notification? = nil) {
+        pendingUpdate?.cancel()
         let existingApps = self.apps
-        Task.detached(priority: .utility) {
+        let workItem = DispatchWorkItem { [weak self] in
             let newApps = Self.getRunningApps(existingApps: existingApps)
-            await MainActor.run {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
                 let currentPIDs = self.apps.map { $0.pid }
                 let newPIDs = newApps.map { $0.pid }
                 if currentPIDs != newPIDs {
@@ -47,6 +52,8 @@ class AppManager: ObservableObject {
                 }
             }
         }
+        pendingUpdate = workItem
+        DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 
     // Fix 11: removed extra blank line between allRunning and runningApps
@@ -75,7 +82,11 @@ class AppManager: ObservableObject {
 
 struct VolumeControlView: View {
     @State private var masterVolume: Double = 0.5
+    @State private var previousMasterVolume: Double = 0.5
     @State private var isLaunchAtLogin: Bool = false
+    @State private var savedAppVolumes: [Int32: Double] = [:]
+    @State private var isQuitHovered: Bool = false
+    @State private var isGearHovered: Bool = false
     // Fix 7: store sync timer so it can be cancelled on disappear
     @State private var syncTimer: Timer?
 
@@ -83,6 +94,30 @@ struct VolumeControlView: View {
     @StateObject private var tapManager = AudioTapManager()
     // Fix 10: consume UpdateManager via EnvironmentObject (injected from App.swift)
     @EnvironmentObject private var updateManager: UpdateManager
+
+    private var isAllMuted: Bool {
+        !appManager.apps.isEmpty && appManager.apps.allSatisfy { $0.volume == 0 }
+    }
+
+    private func toggleMuteAll() {
+        if isAllMuted {
+            for i in 0..<appManager.apps.count {
+                let pid = appManager.apps[i].pid
+                let restored = savedAppVolumes[pid] ?? 1.0
+                appManager.apps[i].volume = restored > 0 ? restored : 1.0
+                tapManager.setVolume(for: pid, volume: Float(appManager.apps[i].volume))
+            }
+        } else {
+            for i in 0..<appManager.apps.count {
+                let pid = appManager.apps[i].pid
+                if appManager.apps[i].volume > 0 {
+                    savedAppVolumes[pid] = appManager.apps[i].volume
+                }
+                appManager.apps[i].volume = 0
+                tapManager.setVolume(for: pid, volume: 0)
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -129,35 +164,102 @@ struct VolumeControlView: View {
             // Header / Master Volume
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Output Device")
-                        .font(.headline)
-                        .foregroundColor(.primary)
+                    if tapManager.availableOutputDevices.count > 1 {
+                        Menu {
+                            ForEach(tapManager.availableOutputDevices) { device in
+                                Button(action: {
+                                    tapManager.setDefaultOutputDevice(device)
+                                }) {
+                                    HStack {
+                                        Text(device.name)
+                                        if tapManager.currentOutputDevice?.id == device.id {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(tapManager.currentOutputDevice?.name ?? "Output Device")
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
+                    } else {
+                        Text(tapManager.currentOutputDevice?.name ?? "Output Device")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
                     Spacer()
-                    Image(systemName: "headphones")
+                    if !appManager.apps.isEmpty {
+                        Button(action: toggleMuteAll) {
+                            Text(isAllMuted ? "Unmute All" : "Mute All")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
+                    }
+                    Image(systemName: deviceIconName(for: tapManager.currentOutputDevice?.name))
                         .foregroundColor(.secondary)
                 }
 
                 HStack {
-                    Image(systemName: masterVolume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill")
-                        .foregroundColor(.secondary)
-                        .frame(width: 20)
+                    Button(action: {
+                        if masterVolume > 0 {
+                            masterVolume = 0
+                        } else {
+                            masterVolume = previousMasterVolume > 0 ? previousMasterVolume : 0.5
+                        }
+                        tapManager.setSystemVolume(Float(masterVolume))
+                    }) {
+                        Image(systemName: masterVolume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill")
+                            .foregroundColor(masterVolume == 0 ? .red : .secondary)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(masterVolume == 0 ? "Unmute system master volume" : "Mute system master volume")
                     
                     Slider(value: $masterVolume, in: 0...1)
                         .tint(.blue)
+                        .accessibilityLabel("System Master Volume")
+                        .accessibilityValue("\(Int(masterVolume * 100)) percent")
                         .onChange(of: masterVolume) { _, newValue in
+                            if newValue > 0 {
+                                previousMasterVolume = newValue
+                            }
                             tapManager.setSystemVolume(Float(newValue))
+                        }
+                        .onTapGesture(count: 2) {
+                            masterVolume = 1.0
+                            tapManager.setSystemVolume(1.0)
                         }
                     
                     Text("\(Int(masterVolume * 100))%")
-                        .font(.caption)
+                        .font(.caption.monospacedDigit())
                         .foregroundColor(.secondary)
-                        .frame(width: 35, alignment: .trailing)
+                        .frame(width: 40, alignment: .trailing)
                 }
             }
             .padding()
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
+                if masterVolume > 0 {
+                    previousMasterVolume = masterVolume
+                }
                 checkLaunchAtLoginStatus()
                 
                 // Fix 7: store timer so it can be cancelled in onDisappear
@@ -181,10 +283,21 @@ struct VolumeControlView: View {
             // App Volumes
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
-                    Text("No apps playing audio")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .padding()
+                    VStack(spacing: 8) {
+                        Image(systemName: "speaker.wave.1.slash")
+                            .font(.system(size: 24))
+                            .foregroundColor(.secondary.opacity(0.6))
+                        Text("No Active Audio Apps")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                        Text("Apps actively playing sound will automatically appear here.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
+                    }
+                    .padding(.vertical, 24)
                 } else {
                     VStack(spacing: 12) {
                         ForEach($appManager.apps) { $app in
@@ -211,19 +324,46 @@ struct VolumeControlView: View {
             Divider()
 
             // Footer
-            HStack {
+            HStack(spacing: 8) {
+                // Quit Button with Power Icon, ⌘Q Shortcut & Hover Effect
                 Button(action: {
+                    // Bug #5 fix: clean up all taps before quitting
+                    tapManager.removeAllTaps()
                     NSApplication.shared.terminate(nil)
                 }) {
-                    Text("Quit MySound")
-                        .font(.subheadline)
+                    HStack(spacing: 6) {
+                        Image(systemName: "power")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Quit")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                        Text("⌘Q")
+                            .font(.caption2)
+                            .foregroundColor(isQuitHovered ? .red.opacity(0.8) : .secondary.opacity(0.6))
+                    }
+                    .foregroundColor(isQuitHovered ? .red : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(isQuitHovered ? Color.red.opacity(0.1) : Color.clear)
+                    .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal)
-                .padding(.vertical, 10)
+                .keyboardShortcut("q", modifiers: .command)
+                .accessibilityLabel("Quit MySound, Command Q")
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        isQuitHovered = hovering
+                    }
+                }
 
                 Spacer()
 
+                // Version Badge
+                Text("v1.1.0")
+                    .font(.caption2)
+                    .foregroundColor(.secondary.opacity(0.5))
+
+                // Settings Gear Menu with Hover Pill & Icon
                 Menu {
                     Toggle("Launch at Login", isOn: $isLaunchAtLogin)
                         .onChange(of: isLaunchAtLogin) { _, newValue in
@@ -238,12 +378,22 @@ struct VolumeControlView: View {
                     .disabled(updateManager.isChecking || updateManager.isDownloading)
                 } label: {
                     Image(systemName: "gearshape.fill")
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(isGearHovered ? .primary : .secondary)
+                        .padding(6)
+                        .background(isGearHovered ? Color.primary.opacity(0.08) : Color.clear)
+                        .clipShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
-                .frame(width: 20)
-                .padding(.horizontal)
+                .accessibilityLabel("Settings")
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        isGearHovered = hovering
+                    }
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         }
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
@@ -265,11 +415,26 @@ struct VolumeControlView: View {
     private func checkLaunchAtLoginStatus() {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
+
+    private func deviceIconName(for name: String?) -> String {
+        guard let name = name?.lowercased() else { return "speaker.wave.2.fill" }
+        if name.contains("airpod") {
+            return "airpodspro"
+        } else if name.contains("headphone") || name.contains("headset") {
+            return "headphones"
+        } else if name.contains("hdmi") || name.contains("tv") || name.contains("displayport") {
+            return "tv"
+        } else {
+            return "speaker.wave.2.fill"
+        }
+    }
 }
 
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
+    @State private var previousVolume: Double = 0.5
+    @State private var isHovered: Bool = false
 
     var body: some View {
         VStack(spacing: 6) {
@@ -279,29 +444,76 @@ struct AppVolumeRow: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 24, height: 24)
+                    .opacity(app.volume == 0 ? 0.4 : 1.0)
 
+                HStack(spacing: 4) {
+                    Text(app.name)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(app.volume == 0 ? .secondary : .primary)
 
-                Text(app.name)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                    if app.volume > 0 {
+                        Image(systemName: "waveform")
+                            .font(.caption2)
+                            .foregroundColor(.blue.opacity(0.8))
+                            .accessibilityLabel("Playing audio")
+                    }
+                }
 
                 Spacer()
 
                 Text("\(Int(app.volume * 100))%")
-                    .font(.caption)
+                    .font(.caption.monospacedDigit())
                     .foregroundColor(.secondary)
+                    .frame(width: 40, alignment: .trailing)
             }
 
             HStack {
-                Image(systemName: app.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .foregroundColor(.secondary)
-                    .frame(width: 20)
+                Button(action: {
+                    if app.volume > 0 {
+                        previousVolume = app.volume
+                        app.volume = 0
+                    } else {
+                        app.volume = previousVolume > 0 ? previousVolume : 0.5
+                    }
+                    onVolumeChange(Float(app.volume))
+                }) {
+                    Image(systemName: app.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundColor(app.volume == 0 ? .secondary.opacity(0.6) : .secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(app.volume == 0 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
                 Slider(value: $app.volume, in: 0...1)
-                    .tint(.gray)
+                    .tint(app.volume == 0 ? .gray.opacity(0.4) : .blue)
+                    .accessibilityLabel("\(app.name) volume")
+                    .accessibilityValue("\(Int(app.volume * 100)) percent")
                     .onChange(of: app.volume) { _, newValue in
+                        if newValue > 0 {
+                            previousVolume = newValue
+                        }
                         onVolumeChange(Float(newValue))
                     }
+                    .onTapGesture(count: 2) {
+                        app.volume = 1.0
+                        onVolumeChange(1.0)
+                    }
+            }
+        }
+        .padding(6)
+        .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
+        .cornerRadius(6)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: app.volume == 0)
+        .onAppear {
+            if app.volume > 0 {
+                previousVolume = app.volume
             }
         }
     }

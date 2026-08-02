@@ -18,13 +18,39 @@ func AudioHardwareCreateAggregateDevice(_ inDescription: CFDictionary, _ outDevi
 func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatus
 #endif
 
-// Fix 4: Lightweight lock wrapper safe for use on real-time audio threads
-private struct UnfairLock {
+// Bug #3 fix: Shared volume store — Sendable, not actor-isolated,
+// safe for the real-time audio thread to read from.
+final class VolumeStore: @unchecked Sendable {
+    // Bug #2 fix: Using a class (not struct) so os_unfair_lock has a
+    // stable memory address and reference semantics.
     private var _lock = os_unfair_lock_s()
-    mutating func lock() { os_unfair_lock_lock(&_lock) }
-    mutating func unlock() { os_unfair_lock_unlock(&_lock) }
-    mutating func withLock<T>(_ body: () -> T) -> T {
-        lock(); defer { unlock() }; return body()
+    private var volumes: [pid_t: Float] = [:]
+
+    func get(_ pid: pid_t) -> Float {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return volumes[pid] ?? 1.0
+    }
+
+    func set(_ pid: pid_t, _ volume: Float) {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        volumes[pid] = volume
+    }
+}
+
+struct AudioOutputDevice: Identifiable, Hashable, Equatable {
+    let id: AudioDeviceID
+    let name: String
+    let uid: String
+
+    static func == (lhs: AudioOutputDevice, rhs: AudioOutputDevice) -> Bool {
+        lhs.id == rhs.id && lhs.uid == rhs.uid
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(uid)
     }
 }
 
@@ -38,13 +64,19 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     @Published var activeTaps: [pid_t: TapState] = [:]
+    @Published var currentOutputDevice: AudioOutputDevice?
+    @Published var availableOutputDevices: [AudioOutputDevice] = []
 
     // Fix 2: Cache dlsym lookup once at init — avoids redundant symbol resolution on every call
     private let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)?
 
-    // Fix 4: os_unfair_lock for audio-thread-safe volume reads
-    private var volumeLock = UnfairLock()
-    private var volumes: [pid_t: Float] = [:]
+    // Bug #2/#3 fix: VolumeStore is a class with its own lock, safe for real-time audio threads
+    let volumeStore = VolumeStore()
+
+    // Bug #7 fix: store the property listener addresses so we can remove them on deinit
+    private var processListListenerAddress: AudioObjectPropertyAddress?
+    private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
+    private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
 
     override init() {
         // Fix 2: Resolve private SPI symbol once
@@ -52,6 +84,8 @@ class AudioTapManager: NSObject, ObservableObject {
         self.getResponsiblePID = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         super.init()
         setupProcessListListener()
+        refreshOutputDevices()
+        setupHardwareListeners()
     }
 
     private func setupProcessListListener() {
@@ -65,6 +99,41 @@ class AudioTapManager: NSObject, ObservableObject {
                 self?.refreshActiveTaps()
             }
         }
+        // Bug #7 fix: save address so we can remove the listener in deinit
+        processListListenerAddress = address
+    }
+
+    private func setupHardwareListeners() {
+        var defaultDevAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultDevAddr, DispatchQueue.main) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.refreshOutputDevices()
+            }
+        }
+        outputDeviceListenerAddress = defaultDevAddr
+
+        var devicesAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devicesAddr, DispatchQueue.main) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.refreshOutputDevices()
+            }
+        }
+        hardwareDevicesListenerAddress = devicesAddr
+    }
+
+    func refreshOutputDevices() {
+        let devices = getAvailableOutputDevices()
+        let current = getDefaultOutputDevice()
+        self.availableOutputDevices = devices
+        self.currentOutputDevice = current
     }
 
     private func refreshActiveTaps() {
@@ -79,8 +148,8 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     func setVolume(for pid: pid_t, volume: Float) {
-        // Fix 4: use UnfairLock wrapper
-        volumeLock.withLock { volumes[pid] = volume }
+        // Bug #2/#3 fix: use VolumeStore (class-based, RT-safe)
+        volumeStore.set(pid, volume)
 
         // Fix 3: already on @MainActor, call directly — no Task hop needed
         if activeTaps[pid] == nil {
@@ -114,9 +183,12 @@ class AudioTapManager: NSObject, ObservableObject {
             return
         }
 
-        let aggregateDesc: [String: Any] = [
+        // Bug #6 fix: Build aggregate description, try with TapAutoStartKey first,
+        // then fall back without it for older macOS 14.2 Intel builds.
+        let aggUID = UUID().uuidString
+        var aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MySound-Tap-\(pid)" as NSString,
-            kAudioAggregateDeviceUIDKey: UUID().uuidString as NSString,
+            kAudioAggregateDeviceUIDKey: aggUID as NSString,
             kAudioAggregateDeviceMainSubDeviceKey: outputDeviceUID as NSString,
             kAudioAggregateDeviceClockDeviceKey: outputDeviceUID as NSString,
             kAudioAggregateDeviceIsPrivateKey: kCFBooleanTrue as Any,
@@ -132,18 +204,56 @@ class AudioTapManager: NSObject, ObservableObject {
 
         var aggID: AudioObjectID = 0
         status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
+
+        // Bug #6 fix: If aggregate creation fails, retry without TapAutoStartKey
+        // (not recognized on some Intel Macs running exactly macOS 14.2)
+        if status != noErr {
+            print("MySound: Aggregate device creation failed (status \(status)), retrying without TapAutoStartKey...")
+            aggregateDesc.removeValue(forKey: kAudioAggregateDeviceTapAutoStartKey)
+            status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
+        }
+
         guard status == noErr else {
             print("MySound: AudioHardwareCreateAggregateDevice failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyProcessTap(tapID)
             return
         }
 
-        var procID: AudioDeviceIOProcID?
-        status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { [weak self] (now, inputData, inputTime, outputData, outputTime) in
-            guard let self = self else { return }
+        // Bug #1 fix: Force the aggregate device's input stream to Float32
+        // so the IO proc callback always receives Float32 samples.
+        // On Intel Macs, the native format may be Float64, causing the
+        // volume multiplication to operate on misinterpreted data.
+        var currentFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var formatAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioStreamPropertyVirtualFormat,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        if AudioObjectGetPropertyData(aggID, &formatAddr, 0, nil, &formatSize, &currentFormat) == noErr {
+            var float32Format = AudioStreamBasicDescription(
+                mSampleRate: currentFormat.mSampleRate,
+                mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+                mBytesPerPacket: 4,
+                mFramesPerPacket: 1,
+                mBytesPerFrame: 4,
+                mChannelsPerFrame: currentFormat.mChannelsPerFrame > 0 ? currentFormat.mChannelsPerFrame : 2,
+                mBitsPerChannel: 32,
+                mReserved: 0
+            )
+            let setStatus = AudioObjectSetPropertyData(aggID, &formatAddr, 0, nil, formatSize, &float32Format)
+            if setStatus != noErr {
+                print("MySound: Warning — could not force Float32 format on aggregate input (status \(setStatus)). Current format: \(currentFormat.mBitsPerChannel)-bit, flags=\(currentFormat.mFormatFlags)")
+            }
+        }
 
-            // Fix 4: os_unfair_lock is safe to use on the real-time audio thread
-            let vol = self.volumeLock.withLock { self.volumes[pid] ?? 1.0 }
+        // Bug #3 fix: Capture volumeStore (a Sendable class) instead of self
+        // to avoid @MainActor isolation violation on the real-time audio thread.
+        let volumeStore = self.volumeStore
+        var procID: AudioDeviceIOProcID?
+        status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { (now, inputData, inputTime, outputData, outputTime) in
+            let vol = volumeStore.get(pid)
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
@@ -183,9 +293,188 @@ class AudioTapManager: NSObject, ObservableObject {
     func removeTap(for pid: pid_t) {
         guard let state = activeTaps[pid] else { return }
         _ = AudioDeviceStop(state.aggregateID, state.procID)
+        // Bug #4 fix: destroy the IO proc ID to prevent leaking it
+        _ = AudioDeviceDestroyIOProcID(state.aggregateID, state.procID)
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
         activeTaps.removeValue(forKey: pid)
+    }
+
+    // Bug #5 fix: Explicit cleanup of all active taps.
+    // Call before deallocation or on app termination.
+    func removeAllTaps() {
+        for pid in Array(activeTaps.keys) {
+            removeTap(for: pid)
+        }
+    }
+
+    // Bug #5/#7 fix: Clean up property listeners when deallocated.
+    // Note: activeTaps cleanup should be done via removeAllTaps() before
+    // this point, since deinit is nonisolated and can't access @MainActor state.
+    deinit {
+        // Remove property listeners (Bug #7)
+        if var addr = processListListenerAddress {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addr,
+                DispatchQueue.main,
+                { _, _ in }
+            )
+        }
+        if var addr = outputDeviceListenerAddress {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addr,
+                DispatchQueue.main,
+                { _, _ in }
+            )
+        }
+        if var addr = hardwareDevicesListenerAddress {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addr,
+                DispatchQueue.main,
+                { _, _ in }
+            )
+        }
+    }
+
+    // MARK: - Output Device Helpers
+    func getAvailableOutputDevices() -> [AudioOutputDevice] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var propertySize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize) == noErr else {
+            return []
+        }
+
+        let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &deviceIDs) == noErr else {
+            return []
+        }
+
+        var outputDevices: [AudioOutputDevice] = []
+
+        for deviceID in deviceIDs {
+            // Check if device has output streams
+            var streamAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var streamSize: UInt32 = 0
+            if AudioObjectGetPropertyDataSize(deviceID, &streamAddr, 0, nil, &streamSize) != noErr || streamSize == 0 {
+                continue
+            }
+
+            // Get device name
+            var nameAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var name: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            let nameStatus = withUnsafeMutablePointer(to: &name) { ptr in
+                AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, ptr)
+            }
+            guard nameStatus == noErr, let deviceName = name?.takeRetainedValue() as String? else {
+                continue
+            }
+
+            // Filter out MySound tap aggregate devices
+            if deviceName.hasPrefix("MySound-Tap-") {
+                continue
+            }
+
+            // Get device UID
+            var uidAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var uid: Unmanaged<CFString>?
+            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            var deviceUID = ""
+            if withUnsafeMutablePointer(to: &uid, { ptr in
+                AudioObjectGetPropertyData(deviceID, &uidAddr, 0, nil, &uidSize, ptr)
+            }) == noErr, let uidStr = uid?.takeRetainedValue() as String? {
+                deviceUID = uidStr
+            }
+
+            outputDevices.append(AudioOutputDevice(id: deviceID, name: deviceName, uid: deviceUID))
+        }
+
+        return outputDevices
+    }
+
+    func getDefaultOutputDevice() -> AudioOutputDevice? {
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr else {
+            return nil
+        }
+
+        let available = getAvailableOutputDevices()
+        return available.first(where: { $0.id == defaultOutputDeviceID }) ?? getDeviceInfo(id: defaultOutputDeviceID)
+    }
+
+    private func getDeviceInfo(id: AudioDeviceID) -> AudioOutputDevice? {
+        var nameAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let nameStatus = withUnsafeMutablePointer(to: &name) { ptr in
+            AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, ptr)
+        }
+        guard nameStatus == noErr, let deviceName = name?.takeRetainedValue() as String? else {
+            return nil
+        }
+
+        var uidAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var deviceUID = ""
+        if withUnsafeMutablePointer(to: &uid, { ptr in
+            AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, ptr)
+        }) == noErr, let uidStr = uid?.takeRetainedValue() as String? {
+            deviceUID = uidStr
+        }
+
+        return AudioOutputDevice(id: id, name: deviceName, uid: deviceUID)
+    }
+
+    func setDefaultOutputDevice(_ device: AudioOutputDevice) {
+        var devID = device.id
+        let propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID)
+        if status == noErr {
+            self.currentOutputDevice = device
+            refreshOutputDevices()
+        } else {
+            print("MySound: Failed to set default output device \(device.name) (status: \(status))")
+        }
     }
 
     // MARK: - System Volume Helpers

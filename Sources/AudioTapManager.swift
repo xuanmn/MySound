@@ -40,7 +40,6 @@ final class VolumeStore: @unchecked Sendable {
 final class AudioActivityTracker: @unchecked Sendable {
     private var _lock = os_unfair_lock_s()
     private var lastActivity: [pid_t: CFAbsoluteTime] = [:]
-    private var tapCreationTime: [pid_t: CFAbsoluteTime] = [:]
 
     func recordActivity(for pid: pid_t) {
         let now = CFAbsoluteTimeGetCurrent()
@@ -49,28 +48,17 @@ final class AudioActivityTracker: @unchecked Sendable {
         os_unfair_lock_unlock(&_lock)
     }
 
-    func recordTapCreated(for pid: pid_t) {
-        let now = CFAbsoluteTimeGetCurrent()
-        os_unfair_lock_lock(&_lock)
-        tapCreationTime[pid] = now
-        os_unfair_lock_unlock(&_lock)
-    }
-
-    func isAudioActive(for pid: pid_t, timeout: TimeInterval = 3.0, gracePeriod: TimeInterval = 2.5) -> Bool {
+    func isAudioActive(for pid: pid_t, window: TimeInterval = 0.25) -> Bool {
         let now = CFAbsoluteTimeGetCurrent()
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
-        if let created = tapCreationTime[pid], (now - created) < gracePeriod {
-            return true
-        }
         guard let last = lastActivity[pid] else { return false }
-        return (now - last) <= timeout
+        return (now - last) <= window
     }
 
     func remove(pid: pid_t) {
         os_unfair_lock_lock(&_lock)
         lastActivity.removeValue(forKey: pid)
-        tapCreationTime.removeValue(forKey: pid)
         os_unfair_lock_unlock(&_lock)
     }
 }
@@ -342,7 +330,6 @@ class AudioTapManager: NSObject, ObservableObject {
 
         if status == noErr, let proc = procID {
             activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
-            Self.activityTracker.recordTapCreated(for: pid)
             _ = AudioDeviceStart(aggID, proc)
         } else {
             print("MySound: AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")

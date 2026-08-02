@@ -145,7 +145,7 @@ struct VolumeControlView: View {
                     updateManager.performInAppUpdate()
                 }) {
                     HStack {
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: "arrow.down.square.fill")
                         Text("Update Available (\(updateManager.latestVersion ?? ""))")
                         Spacer()
                         Text("Update Now")
@@ -162,7 +162,7 @@ struct VolumeControlView: View {
             }
 
             // Header / Master Volume
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     if tapManager.availableOutputDevices.count > 1 {
                         Menu {
@@ -215,7 +215,7 @@ struct VolumeControlView: View {
                         .foregroundColor(.secondary)
                 }
 
-                HStack {
+                HStack(spacing: 8) {
                     Button(action: {
                         if masterVolume > 0 {
                             masterVolume = 0
@@ -226,16 +226,27 @@ struct VolumeControlView: View {
                     }) {
                         Image(systemName: masterVolume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill")
                             .foregroundColor(masterVolume == 0 ? .red : .secondary)
-                            .frame(width: 24, height: 24)
+                            .font(.system(size: 12))
+                            .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(masterVolume == 0 ? "Unmute system master volume" : "Mute system master volume")
                     
-                    Slider(value: $masterVolume, in: 0...1)
-                        .tint(.blue)
+                    BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
                         .accessibilityLabel("System Master Volume")
                         .accessibilityValue("\(Int(masterVolume * 100)) percent")
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment:
+                                masterVolume = min(masterVolume + 0.05, 1.0)
+                            case .decrement:
+                                masterVolume = max(masterVolume - 0.05, 0.0)
+                            @unknown default:
+                                break
+                            }
+                            tapManager.setSystemVolume(Float(masterVolume))
+                        }
                         .onChange(of: masterVolume) { _, newValue in
                             if newValue > 0 {
                                 previousMasterVolume = newValue
@@ -253,7 +264,8 @@ struct VolumeControlView: View {
                         .frame(width: 40, alignment: .trailing)
                 }
             }
-            .padding()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
@@ -299,14 +311,15 @@ struct VolumeControlView: View {
                     }
                     .padding(.vertical, 24)
                 } else {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 8) {
                         ForEach($appManager.apps) { $app in
                             AppVolumeRow(app: $app) { newVolume in
                                 tapManager.setVolume(for: app.pid, volume: newVolume)
                             }
                         }
                     }
-                    .padding()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                 }
             }
             .frame(width: 300)
@@ -345,7 +358,11 @@ struct VolumeControlView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(isQuitHovered ? Color.red.opacity(0.1) : Color.clear)
-                    .cornerRadius(6)
+                    .overlay(
+                        Rectangle()
+                            .stroke(isQuitHovered ? Color.red.opacity(0.3) : Color.clear, lineWidth: 1)
+                    )
+                    .cornerRadius(0)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("q", modifiers: .command)
@@ -382,7 +399,11 @@ struct VolumeControlView: View {
                         .foregroundColor(isGearHovered ? .primary : .secondary)
                         .padding(6)
                         .background(isGearHovered ? Color.primary.opacity(0.08) : Color.clear)
-                        .clipShape(Circle())
+                        .overlay(
+                            Rectangle()
+                                .stroke(isGearHovered ? Color.primary.opacity(0.15) : Color.clear, lineWidth: 1)
+                        )
+                        .clipShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .accessibilityLabel("Settings")
@@ -437,13 +458,13 @@ struct AppVolumeRow: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             HStack {
                 // App Icon
                 Image(nsImage: app.icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 20, height: 20)
                     .opacity(app.volume == 0 ? 0.4 : 1.0)
 
                 HStack(spacing: 4) {
@@ -465,10 +486,10 @@ struct AppVolumeRow: View {
                 Text("\(Int(app.volume * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.secondary)
-                    .frame(width: 40, alignment: .trailing)
+                    .frame(width: 36, alignment: .trailing)
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 Button(action: {
                     if app.volume > 0 {
                         previousVolume = app.volume
@@ -480,16 +501,27 @@ struct AppVolumeRow: View {
                 }) {
                     Image(systemName: app.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
                         .foregroundColor(app.volume == 0 ? .secondary.opacity(0.6) : .secondary)
-                        .frame(width: 24, height: 24)
+                        .font(.system(size: 11))
+                        .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(app.volume == 0 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
-                Slider(value: $app.volume, in: 0...1)
-                    .tint(app.volume == 0 ? .gray.opacity(0.4) : .blue)
+                BoxySlider(value: $app.volume, range: 0...1, tint: app.volume == 0 ? .gray.opacity(0.4) : .blue)
                     .accessibilityLabel("\(app.name) volume")
                     .accessibilityValue("\(Int(app.volume * 100)) percent")
+                    .accessibilityAdjustableAction { direction in
+                        switch direction {
+                        case .increment:
+                            app.volume = min(app.volume + 0.05, 1.0)
+                        case .decrement:
+                            app.volume = max(app.volume - 0.05, 0.0)
+                        @unknown default:
+                            break
+                        }
+                        onVolumeChange(Float(app.volume))
+                    }
                     .onChange(of: app.volume) { _, newValue in
                         if newValue > 0 {
                             previousVolume = newValue
@@ -502,9 +534,14 @@ struct AppVolumeRow: View {
                     }
             }
         }
-        .padding(6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
         .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
-        .cornerRadius(6)
+        .overlay(
+            Rectangle()
+                .stroke(isHovered ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 1)
+        )
+        .cornerRadius(0)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) {
                 isHovered = hovering
@@ -516,6 +553,69 @@ struct AppVolumeRow: View {
                 previousVolume = app.volume
             }
         }
+    }
+}
+
+struct BoxySlider: View {
+    @Binding var value: Double
+    var range: ClosedRange<Double> = 0...1
+    var tint: Color = .blue
+    var trackHeight: CGFloat = 2
+    var thumbSize: CGFloat = 12
+
+    @State private var isHovered: Bool = false
+    @State private var isDragging: Bool = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let totalWidth = geometry.size.width
+            let usableWidth = max(totalWidth - thumbSize, 1)
+            let percent = max(0, min(1, CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))))
+            let thumbX = percent * usableWidth
+            let fillWidth = percent * usableWidth + (thumbSize / 2)
+
+            ZStack(alignment: .leading) {
+                // Background Track (Ultra-Skinny Bar)
+                Rectangle()
+                    .fill(Color.primary.opacity(0.15))
+                    .frame(height: trackHeight)
+
+                // Filled Track (Ultra-Skinny Bar)
+                Rectangle()
+                    .fill(tint)
+                    .frame(width: fillWidth, height: trackHeight)
+
+                // Original Circular Thumb Knob
+                Circle()
+                    .fill(Color(NSColor.controlBackgroundColor))
+                    .overlay(
+                        Circle()
+                            .stroke(isDragging || isHovered ? tint : Color.primary.opacity(0.4), lineWidth: 1.25)
+                    )
+                    .shadow(color: Color.black.opacity(0.2), radius: 1.5, x: 0, y: 1)
+                    .frame(width: thumbSize, height: thumbSize)
+                    .offset(x: thumbX)
+            }
+            .frame(height: max(thumbSize + 4, 16), alignment: .center)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        isDragging = true
+                        let locationX = gesture.location.x - (thumbSize / 2)
+                        let newPercent = max(0, min(1, locationX / usableWidth))
+                        let newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
+                        value = newValue
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
+        }
+        .frame(height: max(thumbSize + 4, 16))
     }
 }
 

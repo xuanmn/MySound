@@ -12,6 +12,7 @@ struct AppVolume: Identifiable {
 
 @MainActor
 class AppManager: ObservableObject {
+    static let shared = AppManager()
     @Published var apps: [AppVolume] = []
     private var timer: Timer?
 
@@ -96,8 +97,8 @@ struct VolumeControlView: View {
     // Fix 7: store sync timer so it can be cancelled on disappear
     @State private var syncTimer: Timer?
 
-    @StateObject private var appManager = AppManager()
-    @StateObject private var tapManager = AudioTapManager()
+    @EnvironmentObject private var appManager: AppManager
+    @EnvironmentObject private var tapManager: AudioTapManager
     // Fix 10: consume UpdateManager via EnvironmentObject (injected from App.swift)
     @EnvironmentObject private var updateManager: UpdateManager
 
@@ -376,7 +377,7 @@ struct VolumeControlView: View {
                 Spacer()
 
                 // Version Badge
-                Text("v1.1.0")
+                Text("v1.2.0")
                     .font(.caption2)
                     .foregroundColor(.secondary.opacity(0.5))
 

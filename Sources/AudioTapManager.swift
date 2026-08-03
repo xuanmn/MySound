@@ -54,7 +54,7 @@ final class AudioActivityTracker: @unchecked Sendable {
         os_unfair_lock_unlock(&_lock)
     }
 
-    func isAudioActive(for pid: pid_t, window: TimeInterval = 2.5) -> Bool {
+    func isAudioActive(for pid: pid_t, window: TimeInterval = 1.0) -> Bool {
         let now = CFAbsoluteTimeGetCurrent()
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
@@ -86,6 +86,8 @@ struct AudioOutputDevice: Identifiable, Hashable, Equatable {
 
 @MainActor
 class AudioTapManager: NSObject, ObservableObject {
+    static let shared = AudioTapManager()
+
     struct TapState {
         let tapID: AudioObjectID
         let aggregateID: AudioObjectID
@@ -97,16 +99,12 @@ class AudioTapManager: NSObject, ObservableObject {
     @Published var currentOutputDevice: AudioOutputDevice?
     @Published var availableOutputDevices: [AudioOutputDevice] = []
 
-    // Fix 2: Cache dlsym lookup once at init — avoids redundant symbol resolution on every call
+    // Cache dlsym lookup once at init — avoids redundant symbol resolution on every call
     private let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)?
 
-    // Bug #2/#3 fix: VolumeStore is a class with its own lock, safe for real-time audio threads
     let volumeStore = VolumeStore()
     nonisolated static let activityTracker = AudioActivityTracker()
 
-    // Bug #7 fix: store listener addresses AND the actual block objects so deinit can
-    // pass the exact same block pointer back to AudioObjectRemovePropertyListenerBlock.
-    // Passing a new closure to Remove would never match the registered block.
     private var processListListenerAddress: AudioObjectPropertyAddress?
     private var processListListenerBlock: AudioObjectPropertyListenerBlock?
     private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
@@ -114,14 +112,36 @@ class AudioTapManager: NSObject, ObservableObject {
     private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
     private var hardwareDevicesListenerBlock: AudioObjectPropertyListenerBlock?
 
+    private var cleanupTimer: Timer?
+
     override init() {
-        // Fix 2: Resolve private SPI symbol once
+        // Resolve private SPI symbol once
         let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
         self.getResponsiblePID = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         super.init()
         setupProcessListListener()
         refreshOutputDevices()
         setupHardwareListeners()
+        setupCleanupTimer()
+    }
+
+    private func setupCleanupTimer() {
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.cleanupInactiveTaps()
+            }
+        }
+    }
+
+    func cleanupInactiveTaps() {
+        let currentActivePIDs = Array(activeTaps.keys)
+        for pid in currentActivePIDs {
+            let isRunning = NSRunningApplication(processIdentifier: pid) != nil
+            let isActive = Self.activityTracker.isAudioActive(for: pid, window: 1.0)
+            if !isRunning || !isActive {
+                removeTap(for: pid)
+            }
+        }
     }
 
     func getMainAppPID(for targetPID: pid_t) -> pid_t {
@@ -795,7 +815,7 @@ class AudioTapManager: NSObject, ObservableObject {
                     activityTracker.recordActivity(for: respPID)
                 }
 
-                let isRecentlyActive = !onlyPlayingAudio || activityTracker.isAudioActive(for: processPID, window: 2.5) || activityTracker.isAudioActive(for: respPID, window: 2.5)
+                let isRecentlyActive = !onlyPlayingAudio || activityTracker.isAudioActive(for: processPID, window: 1.0) || activityTracker.isAudioActive(for: respPID, window: 1.0)
 
                 if isRecentlyActive {
                     activePIDs.insert(respPID)

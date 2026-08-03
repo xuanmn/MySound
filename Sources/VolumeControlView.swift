@@ -16,7 +16,13 @@ class AppManager: ObservableObject {
     private var timer: Timer?
 
     init() {
-        self.apps = Self.getRunningApps(existingApps: [])
+        // Don't call expensive getRunningApps() synchronously on @MainActor init —
+        // it blocks the main thread with CoreAudio/proc_pidpath calls.
+        // Defer to an async task so the UI can appear immediately.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.apps = Self.getRunningApps(existingApps: [])
+        }
 
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
@@ -510,7 +516,9 @@ struct AppVolumeRow: View {
                         @unknown default:
                             break
                         }
-                        onVolumeChange(Float(app.volume))
+                        // Note: do NOT call onVolumeChange here —
+                        // onChange(of: app.volume) fires automatically and handles it,
+                        // preventing a double setVolume call per accessibility step.
                     }
                     .onChange(of: app.volume) { _, newValue in
                         if newValue > 0 {

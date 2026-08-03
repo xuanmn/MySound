@@ -35,6 +35,12 @@ final class VolumeStore: @unchecked Sendable {
         defer { os_unfair_lock_unlock(&_lock) }
         volumes[pid] = volume
     }
+
+    func remove(_ pid: pid_t) {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        volumes.removeValue(forKey: pid)
+    }
 }
 
 final class AudioActivityTracker: @unchecked Sendable {
@@ -98,10 +104,15 @@ class AudioTapManager: NSObject, ObservableObject {
     let volumeStore = VolumeStore()
     nonisolated static let activityTracker = AudioActivityTracker()
 
-    // Bug #7 fix: store the property listener addresses so we can remove them on deinit
+    // Bug #7 fix: store listener addresses AND the actual block objects so deinit can
+    // pass the exact same block pointer back to AudioObjectRemovePropertyListenerBlock.
+    // Passing a new closure to Remove would never match the registered block.
     private var processListListenerAddress: AudioObjectPropertyAddress?
+    private var processListListenerBlock: AudioObjectPropertyListenerBlock?
     private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
+    private var outputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
     private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
+    private var hardwareDevicesListenerBlock: AudioObjectPropertyListenerBlock?
 
     override init() {
         // Fix 2: Resolve private SPI symbol once
@@ -136,13 +147,16 @@ class AudioTapManager: NSObject, ObservableObject {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
+        // Bug #7 fix: store the block object itself so deinit can pass the exact
+        // same pointer back to AudioObjectRemovePropertyListenerBlock.
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshActiveTaps()
             }
         }
-        // Bug #7 fix: save address so we can remove the listener in deinit
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
         processListListenerAddress = address
+        processListListenerBlock = block
     }
 
     private func setupHardwareListeners() {
@@ -151,24 +165,28 @@ class AudioTapManager: NSObject, ObservableObject {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultDevAddr, DispatchQueue.main) { [weak self] _, _ in
+        let outputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshOutputDevices()
             }
         }
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultDevAddr, DispatchQueue.main, outputBlock)
         outputDeviceListenerAddress = defaultDevAddr
+        outputDeviceListenerBlock = outputBlock
 
         var devicesAddr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devicesAddr, DispatchQueue.main) { [weak self] _, _ in
+        let devicesBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshOutputDevices()
             }
         }
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devicesAddr, DispatchQueue.main, devicesBlock)
         hardwareDevicesListenerAddress = devicesAddr
+        hardwareDevicesListenerBlock = devicesBlock
     }
 
     func refreshOutputDevices() {
@@ -201,15 +219,6 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
-    func ensureTapsForAudioProcesses() {
-        let rawPIDs = Self.getRawProcessPIDs()
-        for pid in rawPIDs {
-            let mainPID = getMainAppPID(for: pid)
-            if activeTaps[mainPID] == nil {
-                createTap(for: mainPID)
-            }
-        }
-    }
 
     func setVolume(for targetPID: pid_t, volume: Float) {
         let mainPID = getMainAppPID(for: targetPID)
@@ -399,6 +408,8 @@ class AudioTapManager: NSObject, ObservableObject {
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
         Self.activityTracker.remove(pid: pid)
+        // Clear stale volume entry to prevent unbounded VolumeStore growth
+        volumeStore.remove(pid)
         activeTaps.removeValue(forKey: pid)
     }
 
@@ -414,29 +425,31 @@ class AudioTapManager: NSObject, ObservableObject {
     // Note: activeTaps cleanup should be done via removeAllTaps() before
     // this point, since deinit is nonisolated and can't access @MainActor state.
     deinit {
-        // Remove property listeners (Bug #7)
-        if var addr = processListListenerAddress {
+        // Remove property listeners using the stored block objects.
+        // AudioObjectRemovePropertyListenerBlock requires the exact same block
+        // pointer that was passed to AudioObjectAddPropertyListenerBlock.
+        if var addr = processListListenerAddress, let block = processListListenerBlock {
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
                 &addr,
                 DispatchQueue.main,
-                { _, _ in }
+                block
             )
         }
-        if var addr = outputDeviceListenerAddress {
+        if var addr = outputDeviceListenerAddress, let block = outputDeviceListenerBlock {
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
                 &addr,
                 DispatchQueue.main,
-                { _, _ in }
+                block
             )
         }
-        if var addr = hardwareDevicesListenerAddress {
+        if var addr = hardwareDevicesListenerAddress, let block = hardwareDevicesListenerBlock {
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
                 &addr,
                 DispatchQueue.main,
-                { _, _ in }
+                block
             )
         }
     }
@@ -573,7 +586,10 @@ class AudioTapManager: NSObject, ObservableObject {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID)
         if status == noErr {
             self.currentOutputDevice = device
-            refreshOutputDevices()
+            // Note: Do NOT call refreshOutputDevices() here — the HAL listener for
+            // kAudioHardwarePropertyDefaultOutputDevice fires automatically and calls
+            // refreshOutputDevices(), which calls recreateAllTaps(). Calling it again
+            // here would cause double tap recreation.
         } else {
             print("MySound: Failed to set default output device \(device.name) (status: \(status))")
         }

@@ -99,8 +99,11 @@ class AudioTapManager: NSObject, ObservableObject {
     @Published var currentOutputDevice: AudioOutputDevice?
     @Published var availableOutputDevices: [AudioOutputDevice] = []
 
-    // Cache dlsym lookup once at init — avoids redundant symbol resolution on every call
-    private let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)?
+    // Cache dlsym lookup once globally — avoids redundant symbol resolution on every call
+    private nonisolated static let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid") else { return nil }
+        return unsafeBitCast(symbol, to: (@convention(c) (pid_t) -> pid_t).self)
+    }()
 
     let volumeStore = VolumeStore()
     nonisolated static let activityTracker = AudioActivityTracker()
@@ -115,9 +118,6 @@ class AudioTapManager: NSObject, ObservableObject {
     private var cleanupTimer: Timer?
 
     override init() {
-        // Resolve private SPI symbol once
-        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
-        self.getResponsiblePID = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         super.init()
         setupProcessListListener()
         refreshOutputDevices()
@@ -148,10 +148,10 @@ class AudioTapManager: NSObject, ObservableObject {
         if let app = NSRunningApplication(processIdentifier: targetPID), app.activationPolicy == .regular {
             return targetPID
         }
-        if let respPID = getResponsiblePID?(targetPID), let app = NSRunningApplication(processIdentifier: respPID), app.activationPolicy == .regular {
+        if let respPID = Self.getResponsiblePID?(targetPID), let app = NSRunningApplication(processIdentifier: respPID), app.activationPolicy == .regular {
             return respPID
         }
-        if let procPath = getPath(for: targetPID) {
+        if let procPath = Self.getPath(for: targetPID) {
             for app in NSWorkspace.shared.runningApplications {
                 if app.activationPolicy == .regular, let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
                     return app.processIdentifier
@@ -560,39 +560,7 @@ class AudioTapManager: NSObject, ObservableObject {
         }
 
         let available = getAvailableOutputDevices()
-        return available.first(where: { $0.id == defaultOutputDeviceID }) ?? getDeviceInfo(id: defaultOutputDeviceID)
-    }
-
-    private func getDeviceInfo(id: AudioDeviceID) -> AudioOutputDevice? {
-        var nameAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var name: Unmanaged<CFString>?
-        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        let nameStatus = withUnsafeMutablePointer(to: &name) { ptr in
-            AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, ptr)
-        }
-        guard nameStatus == noErr, let deviceName = name?.takeRetainedValue() as String? else {
-            return nil
-        }
-
-        var uidAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var uid: Unmanaged<CFString>?
-        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var deviceUID = ""
-        if withUnsafeMutablePointer(to: &uid, { ptr in
-            AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, ptr)
-        }) == noErr, let uidStr = uid?.takeRetainedValue() as String? {
-            deviceUID = uidStr
-        }
-
-        return AudioOutputDevice(id: id, name: deviceName, uid: deviceUID)
+        return available.first(where: { $0.id == defaultOutputDeviceID })
     }
 
     func setDefaultOutputDevice(_ device: AudioOutputDevice) {
@@ -712,11 +680,11 @@ class AudioTapManager: NSObject, ObservableObject {
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
                 var matched = false
-                if processPID == targetPID || childPIDs.contains(processPID) || getResponsiblePID?(processPID) == targetPID {
+                if processPID == targetPID || childPIDs.contains(processPID) || Self.getResponsiblePID?(processPID) == targetPID {
                     matched = true
                 } else if let targetBundleID = targetBundleID, let processBundleID = NSRunningApplication(processIdentifier: processPID)?.bundleIdentifier, processBundleID.hasPrefix(targetBundleID) {
                     matched = true
-                } else if let targetAppPath = targetAppPath, let procPath = getPath(for: processPID), procPath.hasPrefix(targetAppPath) {
+                } else if let targetAppPath = targetAppPath, let procPath = Self.getPath(for: processPID), procPath.hasPrefix(targetAppPath) {
                     matched = true
                 }
                 if matched {
@@ -727,7 +695,7 @@ class AudioTapManager: NSObject, ObservableObject {
         return matchingIDs
     }
 
-    private func getPath(for pid: pid_t) -> String? {
+    private nonisolated static func getPath(for pid: pid_t) -> String? {
         let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
         defer { pathBuffer.deallocate() }
         let pathLength = proc_pidpath(pid, pathBuffer, UInt32(MAXPATHLEN))
@@ -735,43 +703,6 @@ class AudioTapManager: NSObject, ObservableObject {
             return String(cString: pathBuffer)
         }
         return nil
-    }
-
-    nonisolated static func getRawProcessPIDs() -> Set<pid_t> {
-        var processListSize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
-        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
-        var processIDs = [AudioObjectID](repeating: 0, count: count)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
-
-        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
-        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
-        var rawPIDs = Set<pid_t>()
-        let runningApps = NSWorkspace.shared.runningApplications
-        for processID in processIDs {
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var processPID: pid_t = 0
-            if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
-                let respPID = getResponsiblePID?(processPID) ?? processPID
-                rawPIDs.insert(respPID)
-                rawPIDs.insert(processPID)
-
-                let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
-                defer { pathBuffer.deallocate() }
-                let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
-                if pathLength > 0 {
-                    let procPath = String(cString: pathBuffer)
-                    for app in runningApps {
-                        if let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
-                            rawPIDs.insert(app.processIdentifier)
-                        }
-                    }
-                }
-            }
-        }
-        return rawPIDs
     }
 
     nonisolated static func isProcessRunningOutput(_ processID: AudioObjectID) -> Bool {
@@ -797,8 +728,6 @@ class AudioTapManager: NSObject, ObservableObject {
         var processIDs = [AudioObjectID](repeating: 0, count: count)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
 
-        let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid")
-        let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = symbol.map { unsafeBitCast($0, to: (@convention(c) (pid_t) -> pid_t).self) }
         var activePIDs = Set<pid_t>()
         let runningApps = NSWorkspace.shared.runningApplications
 
@@ -807,7 +736,7 @@ class AudioTapManager: NSObject, ObservableObject {
             var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
-                let respPID = getResponsiblePID?(processPID) ?? processPID
+                let respPID = Self.getResponsiblePID?(processPID) ?? processPID
 
                 let isHardwarePlaying = isProcessRunningOutput(processID)
                 if isHardwarePlaying {
@@ -821,11 +750,7 @@ class AudioTapManager: NSObject, ObservableObject {
                     activePIDs.insert(respPID)
                     activePIDs.insert(processPID)
 
-                    let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
-                    defer { pathBuffer.deallocate() }
-                    let pathLength = proc_pidpath(processPID, pathBuffer, UInt32(MAXPATHLEN))
-                    if pathLength > 0 {
-                        let procPath = String(cString: pathBuffer)
+                    if let procPath = getPath(for: processPID) {
                         for app in runningApps {
                             if let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
                                 if isHardwarePlaying {

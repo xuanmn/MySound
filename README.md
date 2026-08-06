@@ -44,21 +44,24 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 ### Installation
 
-#### Option 1: Quick Install via DMG (Recommended)
-1. Run `./build.sh` to package the app:
-   ```bash
-   ./build.sh
-   ```
-2. Open `build/MySound.dmg`.
-3. Drag **MySound** directly into your **Applications** folder.
+#### Option 1: 1-Line Terminal Quick Install (Recommended)
+Run this single command in your Terminal to automatically download, install to `/Applications`, clear Gatekeeper restrictions, and launch MySound:
+```bash
+curl -fsSL https://raw.githubusercontent.com/xuanmn/MySound/main/install.sh | bash
+```
 
-#### Option 2: Build & Run Locally
+#### Option 2: Download DMG Package
+1. Download **`MySound.dmg`** from the [Latest Releases](https://github.com/xuanmn/MySound/releases) page.
+2. Double-click the DMG and drag **MySound** into your **Applications** folder.
+3. On first launch, **Right-click** (or `Control` + click) on `MySound.app` in `/Applications` and select **Open**.
+
+#### Option 3: Build & Run Locally
 1. Clone the repository:
    ```bash
    git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-2. Build the app bundle:
+2. Build the Universal Binary:
    ```bash
    ./build.sh
    ```
@@ -87,28 +90,27 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 MySound requires specific macOS permissions to intercept per-application audio streams. All audio processing is handled **100% locally on your Mac**.
 
-### 1. Microphone / Audio Recording Access
-On first launch, macOS will display a system prompt asking for **Microphone / System Audio Access**.
+### 1. System Audio Recording / Microphone Access
+MySound uses Apple's CoreAudio process tap framework (`CATapDescription`) to intercept app audio streams.
 
 > [!IMPORTANT]
-> **Privacy Guarantee**: MySound **does NOT record your microphone or store your audio**. macOS categorizes CoreAudio process taps (`CATapDescription`) under audio capture permissions. MySound only modifies sample volume gain in memory before outputting to your speakers.
+> **Privacy Guarantee**: MySound **does NOT record your microphone or store your audio**. macOS categorizes process taps under system audio capture permissions. MySound only modifies sample volume gain in memory before outputting to your speakers.
 
 **How to grant permission:**
-1. Click **Allow** when the system prompt appears on first launch.
-2. If missed, open **System Settings** > **Privacy & Security** > **Microphone** (or **Screen & System Audio Recording** on macOS Sequoia).
-3. Ensure the toggle for **MySound** is switched **ON**.
+1. MySound features a built-in **Permission Guidance Banner**. Click **Open System Settings** directly inside the app popover.
+2. In **System Settings** > **Privacy & Security** > **Screen & System Audio Recording** (or **Microphone** on macOS Sonoma), ensure **MySound** is toggled **ON**.
 
 ---
 
 ### 2. Opening for the First Time (macOS Gatekeeper)
-Because MySound is built locally or self-signed, macOS Gatekeeper may show a warning:
+If installing via manual DMG download, macOS Gatekeeper may show a warning:
 `"MySound cannot be opened because it is from an unidentified developer."`
 
-**How to bypass on first launch:**
-1. In Finder, navigate to your **Applications** folder.
+**How to open on first launch:**
+1. In Finder, open your **Applications** folder.
 2. **Right-click** (or `Control` + click) on `MySound.app` and select **Open**.
-3. Click **Open** in the confirmation popup window.
-4. *Alternative*: Go to **System Settings** > **Privacy & Security**, scroll down to the *Security* section, and click **Open Anyway** next to MySound.
+3. Click **Open** in the confirmation popup.
+*(Note: If you installed using the [Option 1 Terminal script](#option-1-1-line-terminal-quick-install-recommended), Gatekeeper is bypassed automatically).*
 
 ---
 

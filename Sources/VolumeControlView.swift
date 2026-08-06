@@ -94,6 +94,7 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
+    @State private var hasPermission: Bool = true
     // Fix 7: store sync timer so it can be cancelled on disappear
     @State private var syncTimer: Timer?
 
@@ -280,6 +281,7 @@ struct VolumeControlView: View {
                     previousMasterVolume = masterVolume
                 }
                 checkLaunchAtLoginStatus()
+                hasPermission = AudioTapManager.hasAudioCapturePermission()
                 
                 // Fix 7: store timer so it can be cancelled in onDisappear
                 syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -299,19 +301,79 @@ struct VolumeControlView: View {
 
             Divider()
 
+            // In-App Permission Guidance Banner
+            if !hasPermission {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock.shield.fill")
+                            .foregroundColor(.orange)
+                            .font(.system(size: 16))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("System Audio Access Required")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
+                            Text("Grant Screen & System Audio Recording permission to adjust per-app volume.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Button(action: {
+                        AudioTapManager.openSystemAudioPermissionSettings()
+                    }) {
+                        HStack(spacing: 4) {
+                            Text("Open System Settings")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue)
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                Divider()
+            }
+
             // App Volumes
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 8) {
                         Image(systemName: "speaker.wave.2.slash.fill")
-                            .font(.system(size: 28))
+                            .font(.system(size: 26))
                             .foregroundColor(.secondary.opacity(0.6))
                         Text("No Audio Playing")
                             .font(.subheadline)
                             .fontWeight(.semibold)
                             .foregroundColor(.primary)
+                        Text("Start sound in an app (e.g. Spotify, Chrome) to control its volume.")
+                            .font(.caption2)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 20)
+
+                        Button(action: {
+                            AudioTapManager.openSystemAudioPermissionSettings()
+                        }) {
+                            Text("Check Permissions")
+                                .font(.caption2)
+                                .foregroundColor(.blue)
+                                .underline()
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 2)
                     }
-                    .padding(.vertical, 32)
+                    .padding(.vertical, 24)
                     .transition(.opacity)
                 } else {
                     VStack(spacing: 8) {
@@ -329,6 +391,7 @@ struct VolumeControlView: View {
             .frame(width: 300)
             .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
+                hasPermission = AudioTapManager.hasAudioCapturePermission()
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
             }

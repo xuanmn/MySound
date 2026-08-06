@@ -80,7 +80,14 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
 EOF
 
 echo "Signing app..."
-codesign --force --sign - --entitlements Entitlements.plist "${APP_BUNDLE}"
+SIGNING_IDENTITY="${DEVELOPER_ID:--}"
+if [ "$SIGNING_IDENTITY" != "-" ]; then
+    echo "Signing with Developer ID Application identity: ${SIGNING_IDENTITY}"
+    codesign --force --deep --timestamp --options runtime --sign "${SIGNING_IDENTITY}" --entitlements Entitlements.plist "${APP_BUNDLE}"
+else
+    echo "Signing with local ad-hoc identity..."
+    codesign --force --deep --sign - --entitlements Entitlements.plist "${APP_BUNDLE}"
+fi
 
 echo "Build complete. App bundle created at ${APP_BUNDLE}"
 
@@ -99,6 +106,19 @@ cp -R "${APP_BUNDLE}" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create -volname "${APP_NAME}" -srcfolder "$DMG_STAGE" -ov -format UDZO "${BUILD_DIR}/${APP_NAME}.dmg" > /dev/null
 rm -rf "$DMG_STAGE"
+
+if [ "$SIGNING_IDENTITY" != "-" ]; then
+    echo "Signing DMG installer..."
+    codesign --force --sign "${SIGNING_IDENTITY}" "${BUILD_DIR}/${APP_NAME}.dmg"
+fi
+
+if [ -n "$NOTARIZE_PROFILE" ]; then
+    echo "Submitting DMG for Apple Notarization using profile: ${NOTARIZE_PROFILE}..."
+    xcrun notarytool submit "${BUILD_DIR}/${APP_NAME}.dmg" --keychain-profile "${NOTARIZE_PROFILE}" --wait
+    echo "Stapling notarization ticket to DMG..."
+    xcrun stapler staple "${BUILD_DIR}/${APP_NAME}.dmg"
+    echo "✅ Notarization and stapling complete!"
+fi
 
 echo "============================================================"
 echo "✅  DMG Installer created at: ${BUILD_DIR}/${APP_NAME}.dmg"

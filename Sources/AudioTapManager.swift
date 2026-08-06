@@ -2,6 +2,7 @@ import Foundation
 import CoreAudio
 import AppKit
 import os
+import CoreGraphics
 
 // Declare private Core Audio functions (macOS 14.2+)
 #if canImport(CoreAudio)
@@ -107,6 +108,16 @@ class AudioTapManager: NSObject, ObservableObject {
 
     let volumeStore = VolumeStore()
     nonisolated static let activityTracker = AudioActivityTracker()
+
+    nonisolated static func hasAudioCapturePermission() -> Bool {
+        return CGPreflightScreenCaptureAccess()
+    }
+
+    nonisolated static func openSystemAudioPermissionSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     private var processListListenerAddress: AudioObjectPropertyAddress?
     private var processListListenerBlock: AudioObjectPropertyListenerBlock?

@@ -164,9 +164,19 @@ class UpdateManager: ObservableObject {
 
         Task {
             do {
-                let (asyncBytes, response) = try await URLSession.shared.bytes(from: zipURL)
+                var (asyncBytes, response) = try await URLSession.shared.bytes(from: zipURL)
+                
+                // If GitHub release zip URL bails 404 (release asset not created yet), fallback to raw GitHub main branch asset
+                if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 404 {
+                    if let rawFallbackURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/build/MySound.zip") {
+                        let (fallbackBytes, fallbackResp) = try await URLSession.shared.bytes(from: rawFallbackURL)
+                        asyncBytes = fallbackBytes
+                        response = fallbackResp
+                    }
+                }
+
                 guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                    throw NSError(domain: "UpdateError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to download update package (HTTP status \((response as? HTTPURLResponse)?.statusCode ?? 0))."])
+                    throw NSError(domain: "UpdateError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to download update package (HTTP status \((response as? HTTPURLResponse)?.statusCode ?? 0)). Please ensure a release asset is published on GitHub."])
                 }
                 
                 let expectedLength = response.expectedContentLength

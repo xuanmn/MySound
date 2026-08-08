@@ -19,6 +19,37 @@ func AudioHardwareCreateAggregateDevice(_ inDescription: CFDictionary, _ outDevi
 func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatus
 #endif
 
+final class AppLogger: @unchecked Sendable {
+    static let shared = AppLogger()
+    private let logFileURL: URL?
+
+    init() {
+        let fileManager = FileManager.default
+        if let libraryLogs = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first?.appendingPathComponent("Logs") {
+            try? fileManager.createDirectory(at: libraryLogs, withIntermediateDirectories: true)
+            logFileURL = libraryLogs.appendingPathComponent("MySound.log")
+        } else {
+            logFileURL = nil
+        }
+    }
+
+    func log(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
+        let logLine = "[\(timestamp)] \(message)\n"
+        NSLog("MySound: %@", message)
+        guard let url = logFileURL else { return }
+        if let data = logLine.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: url)
+            }
+        }
+    }
+}
+
 // Bug #3 fix: Shared volume store — Sendable, not actor-isolated,
 // safe for the real-time audio thread to read from.
 final class VolumeStore: @unchecked Sendable {
@@ -251,34 +282,48 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
 
+    func ensureTapCreated(for targetPID: pid_t) {
+        let pid = getMainAppPID(for: targetPID)
+        if activeTaps[pid] == nil && activeTaps[targetPID] == nil {
+            createTap(for: targetPID)
+        }
+    }
+
     func setVolume(for targetPID: pid_t, volume: Float) {
         let mainPID = getMainAppPID(for: targetPID)
         volumeStore.set(mainPID, volume)
+        volumeStore.set(targetPID, volume)
 
-        if activeTaps[mainPID] == nil {
-            createTap(for: mainPID)
+        if activeTaps[mainPID] == nil && activeTaps[targetPID] == nil {
+            createTap(for: targetPID)
         }
     }
 
     private func createTap(for targetPID: pid_t) {
         // Fix 5: guard against running on unsupported macOS versions
         guard #available(macOS 14.2, *) else {
-            print("MySound: Process taps require macOS 14.2 or later.")
+            AppLogger.shared.log("Process taps require macOS 14.2 or later.")
             return
         }
         let pid = getMainAppPID(for: targetPID)
-        if activeTaps[pid] != nil { return }
+        if activeTaps[pid] != nil || activeTaps[targetPID] != nil { return }
 
-        guard let outputDeviceUID = getDefaultOutputDeviceUID() else { return }
+        guard let outputDeviceUID = getDefaultOutputDeviceUID() else {
+            AppLogger.shared.log("Could not get default output device UID for PID \(pid)")
+            return
+        }
 
-        let objectIDs = getAudioObjectIDs(for: pid)
-        NSLog("MySound DEBUG: createTap for PID %d -> found %d AudioObjectIDs", pid, objectIDs.count)
-        guard !objectIDs.isEmpty else { return }
+        let objectIDs = getAudioObjectIDs(for: targetPID)
+        AppLogger.shared.log("createTap for PID \(targetPID) (main PID \(pid)) -> found \(objectIDs.count) AudioObjectIDs")
+        guard !objectIDs.isEmpty else {
+            AppLogger.shared.log("No AudioObjectIDs found for PID \(targetPID) (main PID \(pid)). Tap creation skipped.")
+            return
+        }
 
         // Check if any of these objectIDs are already tapped by another activeTap
         let allTappedObjectIDs = Set(activeTaps.values.flatMap { $0.objectIDs })
         if !Set(objectIDs).isDisjoint(with: allTappedObjectIDs) {
-            NSLog("MySound DEBUG: Skipping tap for PID %d - objectIDs already tapped.", pid)
+            AppLogger.shared.log("Skipping tap for PID \(targetPID) - objectIDs already tapped.")
             return
         }
 
@@ -290,14 +335,20 @@ class AudioTapManager: NSObject, ObservableObject {
 
         var tapID: AudioObjectID = 0
         var status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        NSLog("MySound DEBUG: AudioHardwareCreateProcessTap for PID %d returned status %d, tapID %d", pid, status, tapID)
+        
+        // Fallback: Retry with isPrivate = false if private tap failed
+        if status != noErr {
+            AppLogger.shared.log("AudioHardwareCreateProcessTap failed with status \(status) (isPrivate=true). Retrying with isPrivate=false...")
+            tapDescription.isPrivate = false
+            status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
+        }
+
         guard status == noErr else {
-            NSLog("MySound: AudioHardwareCreateProcessTap failed for PID %d with status: %d.", pid, status)
+            AppLogger.shared.log("AudioHardwareCreateProcessTap failed for PID \(targetPID) with status: \(status)")
             return
         }
 
-        // Bug #6 fix: Build aggregate description, try with TapAutoStartKey first,
-        // then fall back without it for older macOS 14.2 Intel builds.
+        // Build aggregate description with fallbacks for Intel/macOS 14/15
         let aggUID = UUID().uuidString
         var aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MySound-Tap-\(pid)" as NSString,
@@ -318,25 +369,26 @@ class AudioTapManager: NSObject, ObservableObject {
         var aggID: AudioObjectID = 0
         status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
 
-        // Bug #6 fix: If aggregate creation fails, retry without TapAutoStartKey
-        // (not recognized on some Intel Macs running exactly macOS 14.2)
         if status != noErr {
-            print("MySound: Aggregate device creation failed (status \(status)), retrying without TapAutoStartKey...")
+            AppLogger.shared.log("Aggregate device creation failed (status \(status)), retrying without TapAutoStartKey...")
             aggregateDesc.removeValue(forKey: kAudioAggregateDeviceTapAutoStartKey)
             status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
         }
 
+        if status != noErr {
+            AppLogger.shared.log("Aggregate device creation failed (status \(status)), retrying without DriftCompensation...")
+            aggregateDesc[kAudioAggregateDeviceSubDeviceListKey] = [
+                [kAudioSubDeviceUIDKey: outputDeviceUID as NSString]
+            ] as NSArray
+            status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
+        }
+
         guard status == noErr else {
-            print("MySound: AudioHardwareCreateAggregateDevice failed for PID \(pid) with status: \(status)")
+            AppLogger.shared.log("AudioHardwareCreateAggregateDevice failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyProcessTap(tapID)
             return
         }
 
-        // Bug #1 fix: Force the aggregate device's input stream to Float32
-        // so the IO proc callback always receives Float32 samples.
-        // IMPORTANT: Only set on INPUT scope. Do NOT touch the output scope —
-        // changing the output format breaks the output device's native format
-        // and causes complete audio silence.
         var currentFormat = AudioStreamBasicDescription()
         var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var formatAddr = AudioObjectPropertyAddress(
@@ -358,25 +410,20 @@ class AudioTapManager: NSObject, ObservableObject {
             )
             let setStatus = AudioObjectSetPropertyData(aggID, &formatAddr, 0, nil, formatSize, &float32Format)
             if setStatus != noErr {
-                print("MySound: Warning — could not force Float32 format on aggregate input (status \(setStatus)). Current format: \(currentFormat.mBitsPerChannel)-bit, flags=\(currentFormat.mFormatFlags)")
+                AppLogger.shared.log("Warning — could not force Float32 format on aggregate input (status \(setStatus)).")
             }
         }
 
-        // Bug #3 fix: Capture volumeStore (a Sendable class) instead of self
-        // to avoid @MainActor isolation violation on the real-time audio thread.
         let volumeStore = self.volumeStore
         var procID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { (now, inputData, inputTime, outputData, outputTime) in
-            let vol = volumeStore.get(pid)
+            let vol = min(volumeStore.get(pid), volumeStore.get(targetPID))
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
 
             guard !inputs.isEmpty && !outputs.isEmpty else { return }
 
-            // Direct Zero-Latency Mix across all audio channel buffers
-            // Uses buffer-for-buffer copy to match the native HAL layout
-            // (typically non-interleaved on macOS)
             let minBuffers = min(inputs.count, outputs.count)
             var hasActiveAudio = false
             for bufIdx in 0..<minBuffers {
@@ -402,7 +449,6 @@ class AudioTapManager: NSObject, ObservableObject {
                             hasActiveAudio = true
                         }
                     }
-                    // Zero any extra bytes in output buffer tail
                     if outputBuf.mDataByteSize > inputBuf.mDataByteSize {
                         let extraBytes = Int(outputBuf.mDataByteSize - inputBuf.mDataByteSize)
                         memset(dst.advanced(by: count), 0, extraBytes)
@@ -411,21 +457,27 @@ class AudioTapManager: NSObject, ObservableObject {
             }
             if hasActiveAudio {
                 AudioTapManager.activityTracker.recordActivity(for: pid)
+                AudioTapManager.activityTracker.recordActivity(for: targetPID)
             }
         }
 
         if status == noErr, let proc = procID {
-            activeTaps[pid] = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
+            let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
+            activeTaps[pid] = tapState
+            activeTaps[targetPID] = tapState
             let startStatus = AudioDeviceStart(aggID, proc)
             if startStatus != noErr {
-                print("MySound: AudioDeviceStart failed for PID \(pid) with status: \(startStatus)")
+                AppLogger.shared.log("AudioDeviceStart failed for PID \(pid) with status: \(startStatus)")
                 activeTaps.removeValue(forKey: pid)
+                activeTaps.removeValue(forKey: targetPID)
                 _ = AudioDeviceDestroyIOProcID(aggID, proc)
                 _ = AudioHardwareDestroyAggregateDevice(aggID)
                 _ = AudioHardwareDestroyProcessTap(tapID)
+            } else {
+                AppLogger.shared.log("Successfully created and started process tap for PID \(targetPID) (main PID \(pid))")
             }
         } else {
-            print("MySound: AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")
+            AppLogger.shared.log("AudioDeviceCreateIOProcIDWithBlock failed for PID \(pid) with status: \(status)")
             _ = AudioHardwareDestroyAggregateDevice(aggID)
             _ = AudioHardwareDestroyProcessTap(tapID)
         }
@@ -678,11 +730,21 @@ class AudioTapManager: NSObject, ObservableObject {
         var processIDs = [AudioObjectID](repeating: 0, count: count)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
         
-        let targetApp = NSRunningApplication(processIdentifier: targetPID)
-        let targetBundleID = targetApp?.bundleIdentifier
-        let targetAppPath = targetApp?.bundleURL?.path
-        let childPIDs = getChildPIDs(parentPID: targetPID)
-        // Fix 2: use pre-cached getResponsiblePID from init
+        let mainPID = getMainAppPID(for: targetPID)
+        let pidsToMatch: Set<pid_t> = [
+            targetPID,
+            mainPID,
+            Self.getResponsiblePID?(targetPID) ?? targetPID,
+            Self.getResponsiblePID?(mainPID) ?? mainPID
+        ]
+        
+        var childPIDs = getChildPIDs(parentPID: targetPID)
+        childPIDs.formUnion(getChildPIDs(parentPID: mainPID))
+
+        let targetApp = NSRunningApplication(processIdentifier: targetPID) ?? NSRunningApplication(processIdentifier: mainPID)
+        let targetBundleID = targetApp?.bundleIdentifier?.lowercased()
+        let targetLocalizedName = targetApp?.localizedName?.lowercased()
+        let targetBundleName = targetApp?.bundleURL?.deletingPathExtension().lastPathComponent.lowercased()
         
         var matchingIDs: [AudioObjectID] = []
         for processID in processIDs {
@@ -691,13 +753,20 @@ class AudioTapManager: NSObject, ObservableObject {
             var processPID: pid_t = 0
             if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
                 var matched = false
-                if processPID == targetPID || childPIDs.contains(processPID) || Self.getResponsiblePID?(processPID) == targetPID {
+                let procRespPID = Self.getResponsiblePID?(processPID) ?? processPID
+                
+                if pidsToMatch.contains(processPID) || pidsToMatch.contains(procRespPID) || childPIDs.contains(processPID) {
                     matched = true
-                } else if let targetBundleID = targetBundleID, let processBundleID = NSRunningApplication(processIdentifier: processPID)?.bundleIdentifier, processBundleID.hasPrefix(targetBundleID) {
+                } else if let processApp = NSRunningApplication(processIdentifier: processPID), let procBundleID = processApp.bundleIdentifier?.lowercased(), let targetBundleID = targetBundleID, (procBundleID.hasPrefix(targetBundleID) || targetBundleID.hasPrefix(procBundleID)) {
                     matched = true
-                } else if let targetAppPath = targetAppPath, let procPath = Self.getPath(for: processPID), procPath.hasPrefix(targetAppPath) {
-                    matched = true
+                } else if let procPath = Self.getPath(for: processPID)?.lowercased() {
+                    if let targetLocalizedName = targetLocalizedName, !targetLocalizedName.isEmpty, procPath.contains(targetLocalizedName) {
+                        matched = true
+                    } else if let targetBundleName = targetBundleName, !targetBundleName.isEmpty, procPath.contains(targetBundleName) {
+                        matched = true
+                    }
                 }
+                
                 if matched {
                     matchingIDs.append(processID)
                 }

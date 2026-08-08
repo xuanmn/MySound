@@ -57,6 +57,9 @@ class AppManager: ObservableObject {
                 if currentPIDs != newPIDs {
                     self.apps = newApps
                 }
+                for app in newApps {
+                    AudioTapManager.shared.ensureTapCreated(for: app.pid)
+                }
             }
         }
         pendingUpdate = workItem

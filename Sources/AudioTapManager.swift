@@ -125,6 +125,7 @@ class AudioTapManager: NSObject, ObservableObject {
         let aggregateID: AudioObjectID
         let procID: AudioDeviceIOProcID
         let objectIDs: [AudioObjectID]
+        let createdAt: CFAbsoluteTime
     }
 
     @Published var activeTaps: [pid_t: TapState] = [:]
@@ -176,10 +177,21 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     func cleanupInactiveTaps() {
+        let now = CFAbsoluteTimeGetCurrent()
+        // Deduplicate: collect unique TapStates by tapID to avoid double-cleanup
+        var seenTapIDs = Set<AudioObjectID>()
         let currentActivePIDs = Array(activeTaps.keys)
         for pid in currentActivePIDs {
+            guard let state = activeTaps[pid] else { continue }
+            // Skip if we already processed this tap (shared between targetPID and mainPID)
+            guard seenTapIDs.insert(state.tapID).inserted else { continue }
+            // Give new taps a 5-second grace period before cleanup can touch them.
+            // On Intel Macs, the aggregate device IO proc can take 1-3 seconds to start
+            // receiving audio buffers after creation.
+            let age = now - state.createdAt
+            if age < 5.0 { continue }
             let isRunning = NSRunningApplication(processIdentifier: pid) != nil
-            let isActive = Self.activityTracker.isAudioActive(for: pid, window: 1.0)
+            let isActive = Self.activityTracker.isAudioActive(for: pid, window: 3.0)
             if !isRunning || !isActive {
                 removeTap(for: pid)
             }
@@ -462,9 +474,13 @@ class AudioTapManager: NSObject, ObservableObject {
         }
 
         if status == noErr, let proc = procID {
-            let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs)
+            let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs, createdAt: CFAbsoluteTimeGetCurrent())
             activeTaps[pid] = tapState
             activeTaps[targetPID] = tapState
+            // Record activity immediately so the cleanup timer doesn't destroy
+            // the tap before the IO proc has a chance to start on Intel Macs
+            Self.activityTracker.recordActivity(for: pid)
+            Self.activityTracker.recordActivity(for: targetPID)
             let startStatus = AudioDeviceStart(aggID, proc)
             if startStatus != noErr {
                 AppLogger.shared.log("AudioDeviceStart failed for PID \(pid) with status: \(startStatus)")
@@ -486,14 +502,16 @@ class AudioTapManager: NSObject, ObservableObject {
     func removeTap(for pid: pid_t) {
         guard let state = activeTaps[pid] else { return }
         _ = AudioDeviceStop(state.aggregateID, state.procID)
-        // Bug #4 fix: destroy the IO proc ID to prevent leaking it
         _ = AudioDeviceDestroyIOProcID(state.aggregateID, state.procID)
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
-        Self.activityTracker.remove(pid: pid)
-        // Clear stale volume entry to prevent unbounded VolumeStore growth
-        volumeStore.remove(pid)
-        activeTaps.removeValue(forKey: pid)
+        // Remove ALL entries sharing this same tap (targetPID + mainPID both point to same TapState)
+        let tapID = state.tapID
+        for (key, value) in activeTaps where value.tapID == tapID {
+            Self.activityTracker.remove(pid: key)
+            volumeStore.remove(key)
+            activeTaps.removeValue(forKey: key)
+        }
     }
 
     // Bug #5 fix: Explicit cleanup of all active taps.

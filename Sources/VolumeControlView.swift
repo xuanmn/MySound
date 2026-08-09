@@ -98,6 +98,7 @@ struct VolumeControlView: View {
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
     @State private var hasPermission: Bool = true
+    @State private var permissionCheckTimer: Timer?
     // Fix 7: store sync timer so it can be cancelled on disappear
     @State private var syncTimer: Timer?
 
@@ -397,6 +398,18 @@ struct VolumeControlView: View {
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
+                // Re-check permission every 3 seconds so the banner disappears
+                // once the user grants access without needing to relaunch
+                permissionCheckTimer?.invalidate()
+                permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
+                    Task { @MainActor in
+                        hasPermission = AudioTapManager.hasAudioCapturePermission()
+                    }
+                }
+            }
+            .onDisappear {
+                permissionCheckTimer?.invalidate()
+                permissionCheckTimer = nil
             }
             .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
                 // Handle terminated apps
@@ -443,7 +456,7 @@ struct VolumeControlView: View {
                 Spacer()
 
                 // Version Badge
-                Text("v1.2.0")
+                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0")")
                     .font(.caption2)
                     .foregroundColor(.secondary.opacity(0.5))
 

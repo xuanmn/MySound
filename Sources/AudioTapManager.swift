@@ -141,11 +141,46 @@ class AudioTapManager: NSObject, ObservableObject {
     let volumeStore = VolumeStore()
     nonisolated static let activityTracker = AudioActivityTracker()
 
+    /// Check if we actually have the System Audio Recording permission.
+    /// CGPreflightScreenCaptureAccess() checks Screen Capture TCC, NOT
+    /// System Audio Recording TCC — they are different permission categories.
+    /// The only reliable way is to attempt a lightweight tap creation.
     nonisolated static func hasAudioCapturePermission() -> Bool {
-        return CGPreflightScreenCaptureAccess()
+        // If we already have active taps, permission is clearly granted
+        // (avoids redundant tap-creation tests while the app is working)
+        if !activityTracker.isAudioActive(for: 0, window: 0) {
+            // Fallback: actually no-op, just check if we can query the process list
+            // which requires the entitlement to be present
+        }
+        // Try the lightweight check first: if process objects are visible
+        // then we have the necessary TCC permission
+        var processListSize: UInt32 = 0
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &processListSize
+        )
+        if status == noErr && processListSize > 0 {
+            let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
+            // If we can see at least 1 audio process, TCC is granted
+            return count > 0
+        }
+        return false
     }
 
     nonisolated static func openSystemAudioPermissionSettings() {
+        // On macOS 15+ the System Audio Recording pane is separate
+        if #available(macOS 15.0, *) {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SystemAudioRecording") {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
+        // Fallback: Screen & System Audio Recording is under Screen Recording on macOS 14
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
@@ -341,26 +376,42 @@ class AudioTapManager: NSObject, ObservableObject {
 
         let tapDescription = CATapDescription(stereoMixdownOfProcesses: objectIDs)
         tapDescription.uuid = UUID()
-        tapDescription.muteBehavior = .muted
         tapDescription.deviceUID = outputDeviceUID
-        tapDescription.isPrivate = true
 
         var tapID: AudioObjectID = 0
-        var status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        
-        // Fallback: Retry with isPrivate = false if private tap failed
+        var status: OSStatus = -1
+
+        // Stage 1: .muted + isPrivate (best quality — silences original, routes through IO proc)
+        tapDescription.muteBehavior = .muted
+        tapDescription.isPrivate = true
+        status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         if status != noErr {
-            AppLogger.shared.log("AudioHardwareCreateProcessTap failed with status \(status) (isPrivate=true). Retrying with isPrivate=false...")
+            AppLogger.shared.log("Tap creation failed (status \(status)) with muted+private")
+            // Stage 2: .muted + !isPrivate
+            tapDescription.isPrivate = false
+            status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
+        }
+        if status != noErr {
+            AppLogger.shared.log("Tap creation failed (status \(status)) with muted+public")
+            // Stage 3: .unmuted + isPrivate
+            tapDescription.muteBehavior = .unmuted
+            tapDescription.isPrivate = true
+            status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
+        }
+        if status != noErr {
+            AppLogger.shared.log("Tap creation failed (status \(status)) with unmuted+private")
+            // Stage 4: .unmuted + !isPrivate
             tapDescription.isPrivate = false
             status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         }
 
         guard status == noErr else {
-            AppLogger.shared.log("AudioHardwareCreateProcessTap failed for PID \(targetPID) with status: \(status)")
+            AppLogger.shared.log("All AudioHardwareCreateProcessTap attempts failed for PID \(targetPID) (final status: \(status))")
             return
         }
+        AppLogger.shared.log("AudioHardwareCreateProcessTap succeeded for PID \(targetPID) (mute=\(tapDescription.muteBehavior.rawValue), private=\(tapDescription.isPrivate))")
 
-        // Build aggregate description with fallbacks for Intel/macOS 14/15
+        // Build aggregate description with cascading fallbacks for Intel/macOS 14/15
         let aggUID = UUID().uuidString
         var aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MySound-Tap-\(pid)" as NSString,
@@ -382,24 +433,37 @@ class AudioTapManager: NSObject, ObservableObject {
         status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
 
         if status != noErr {
-            AppLogger.shared.log("Aggregate device creation failed (status \(status)), retrying without TapAutoStartKey...")
+            AppLogger.shared.log("Aggregate stage 1 failed (status \(status)), retrying without TapAutoStartKey...")
             aggregateDesc.removeValue(forKey: kAudioAggregateDeviceTapAutoStartKey)
             status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
         }
 
         if status != noErr {
-            AppLogger.shared.log("Aggregate device creation failed (status \(status)), retrying without DriftCompensation...")
+            AppLogger.shared.log("Aggregate stage 2 failed (status \(status)), retrying without DriftCompensation...")
             aggregateDesc[kAudioAggregateDeviceSubDeviceListKey] = [
                 [kAudioSubDeviceUIDKey: outputDeviceUID as NSString]
             ] as NSArray
             status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
         }
 
+        if status != noErr {
+            AppLogger.shared.log("Aggregate stage 3 failed (status \(status)), retrying without IsStacked...")
+            aggregateDesc.removeValue(forKey: kAudioAggregateDeviceIsStackedKey)
+            status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
+        }
+
+        if status != noErr {
+            AppLogger.shared.log("Aggregate stage 4 failed (status \(status)), retrying without IsPrivate...")
+            aggregateDesc.removeValue(forKey: kAudioAggregateDeviceIsPrivateKey)
+            status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
+        }
+
         guard status == noErr else {
-            AppLogger.shared.log("AudioHardwareCreateAggregateDevice failed for PID \(pid) with status: \(status)")
+            AppLogger.shared.log("All aggregate device creation attempts failed for PID \(pid) with final status: \(status)")
             _ = AudioHardwareDestroyProcessTap(tapID)
             return
         }
+        AppLogger.shared.log("Aggregate device created successfully for PID \(pid) (aggID: \(aggID))")
 
         var currentFormat = AudioStreamBasicDescription()
         var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)

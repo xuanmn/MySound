@@ -742,7 +742,7 @@ class AudioTapManager: NSObject, ObservableObject {
                 }
             }
             
-            var isMuted: UInt32 = (volume == 0) ? 1 : 0
+            var isMuted: UInt32 = (volume <= 0.001) ? 1 : 0
             for element in [kAudioObjectPropertyElementMain, 1, 2] {
                 var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
                 if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
@@ -757,6 +757,17 @@ class AudioTapManager: NSObject, ObservableObject {
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
+            for element in [kAudioObjectPropertyElementMain, UInt32(1), UInt32(2)] {
+                var isMuted: UInt32 = 0
+                var muteSize = UInt32(MemoryLayout<UInt32>.size)
+                var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: element)
+                if AudioObjectGetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, &muteSize, &isMuted) == noErr {
+                    if isMuted == 1 {
+                        return 0.0
+                    }
+                }
+            }
+
             var vol: Float32 = 0
             var volSize = UInt32(MemoryLayout<Float32>.size)
             var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)

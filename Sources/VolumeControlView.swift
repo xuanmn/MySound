@@ -108,7 +108,7 @@ struct VolumeControlView: View {
     @EnvironmentObject private var updateManager: UpdateManager
 
     private var isAllMuted: Bool {
-        !appManager.apps.isEmpty && appManager.apps.allSatisfy { $0.volume == 0 }
+        !appManager.apps.isEmpty && appManager.apps.allSatisfy { $0.volume <= 0.001 }
     }
 
     private func toggleMuteAll() {
@@ -116,13 +116,13 @@ struct VolumeControlView: View {
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
                 let restored = savedAppVolumes[pid] ?? 1.0
-                appManager.apps[i].volume = restored > 0 ? restored : 1.0
+                appManager.apps[i].volume = restored > 0.001 ? restored : 1.0
                 tapManager.setVolume(for: pid, volume: Float(appManager.apps[i].volume))
             }
         } else {
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
-                if appManager.apps[i].volume > 0 {
+                if appManager.apps[i].volume > 0.001 {
                     savedAppVolumes[pid] = appManager.apps[i].volume
                 }
                 appManager.apps[i].volume = 0
@@ -229,21 +229,21 @@ struct VolumeControlView: View {
 
                 HStack(spacing: 8) {
                     Button(action: {
-                        if masterVolume > 0 {
+                        if masterVolume > 0.001 {
                             masterVolume = 0
                         } else {
-                            masterVolume = previousMasterVolume > 0 ? previousMasterVolume : 0.5
+                            masterVolume = previousMasterVolume > 0.001 ? previousMasterVolume : 0.5
                         }
                         tapManager.setSystemVolume(Float(masterVolume))
                     }) {
-                        Image(systemName: masterVolume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill")
-                            .foregroundColor(masterVolume == 0 ? .red : .secondary)
+                        Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.3.fill")
+                            .foregroundColor(masterVolume <= 0.001 ? .red : .secondary)
                             .font(.system(size: 12))
                             .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(masterVolume == 0 ? "Unmute system master volume" : "Mute system master volume")
+                    .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
                     
                     BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
                         .accessibilityLabel("System Master Volume")
@@ -260,7 +260,7 @@ struct VolumeControlView: View {
                             tapManager.setSystemVolume(Float(masterVolume))
                         }
                         .onChange(of: masterVolume) { _, newValue in
-                            if newValue > 0 {
+                            if newValue > 0.001 {
                                 previousMasterVolume = newValue
                             }
                             tapManager.setSystemVolume(Float(newValue))
@@ -281,7 +281,7 @@ struct VolumeControlView: View {
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
-                if masterVolume > 0 {
+                if masterVolume > 0.001 {
                     previousMasterVolume = masterVolume
                 }
                 checkLaunchAtLoginStatus()
@@ -291,7 +291,7 @@ struct VolumeControlView: View {
                 syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
                     Task { @MainActor in
                         let current = Double(tapManager.getSystemVolume())
-                        if abs(current - masterVolume) > 0.01 {
+                        if (current <= 0.001) != (masterVolume <= 0.001) || abs(current - masterVolume) > 0.005 {
                             masterVolume = current
                         }
                     }
@@ -541,15 +541,15 @@ struct AppVolumeRow: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 20, height: 20)
-                    .opacity(app.volume == 0 ? 0.4 : 1.0)
+                    .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
 
                 HStack(spacing: 4) {
                     Text(app.name)
                         .font(.subheadline)
                         .fontWeight(.medium)
-                        .foregroundColor(app.volume == 0 ? .secondary : .primary)
+                        .foregroundColor(app.volume <= 0.001 ? .secondary : .primary)
 
-                    if app.volume > 0 {
+                    if app.volume > 0.001 {
                         Image(systemName: "waveform")
                             .font(.caption2)
                             .foregroundColor(.blue.opacity(0.8))
@@ -567,24 +567,24 @@ struct AppVolumeRow: View {
 
             HStack(spacing: 8) {
                 Button(action: {
-                    if app.volume > 0 {
+                    if app.volume > 0.001 {
                         previousVolume = app.volume
                         app.volume = 0
                     } else {
-                        app.volume = previousVolume > 0 ? previousVolume : 0.5
+                        app.volume = previousVolume > 0.001 ? previousVolume : 0.5
                     }
                     onVolumeChange(Float(app.volume))
                 }) {
-                    Image(systemName: app.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .foregroundColor(app.volume == 0 ? .secondary.opacity(0.6) : .secondary)
+                    Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundColor(app.volume <= 0.001 ? .red : .secondary)
                         .font(.system(size: 11))
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(app.volume == 0 ? "Unmute \(app.name)" : "Mute \(app.name)")
+                .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
-                BoxySlider(value: $app.volume, range: 0...1, tint: app.volume == 0 ? .gray.opacity(0.4) : .blue)
+                BoxySlider(value: $app.volume, range: 0...1, tint: app.volume <= 0.001 ? .gray.opacity(0.4) : .blue)
                     .accessibilityLabel("\(app.name) volume")
                     .accessibilityValue("\(Int(app.volume * 100)) percent")
                     .accessibilityAdjustableAction { direction in
@@ -601,7 +601,7 @@ struct AppVolumeRow: View {
                         // preventing a double setVolume call per accessibility step.
                     }
                     .onChange(of: app.volume) { _, newValue in
-                        if newValue > 0 {
+                        if newValue > 0.001 {
                             previousVolume = newValue
                         }
                         onVolumeChange(Float(newValue))
@@ -621,9 +621,9 @@ struct AppVolumeRow: View {
                 isHovered = hovering
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: app.volume == 0)
+        .animation(.easeInOut(duration: 0.15), value: app.volume <= 0.001)
         .onAppear {
-            if app.volume > 0 {
+            if app.volume > 0.001 {
                 previousVolume = app.volume
             }
         }
@@ -682,7 +682,12 @@ struct BoxySlider: View {
                         isDragging = true
                         let locationX = gesture.location.x - (thumbWidth / 2)
                         let newPercent = max(0, min(1, locationX / usableWidth))
-                        let newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
+                        var newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
+                        if newValue < 0.005 {
+                            newValue = 0.0
+                        } else if newValue > 0.995 {
+                            newValue = 1.0
+                        }
                         value = newValue
                     }
                     .onEnded { _ in

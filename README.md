@@ -55,13 +55,15 @@ curl -fsSL https://raw.githubusercontent.com/xuanmn/MySound/main/install.sh | ba
 2. Double-click the DMG and drag **MySound** into your **Applications** folder.
 3. On first launch, **Right-click** (or `Control` + click) on `MySound.app` in `/Applications` and select **Open**.
 
-#### Option 3: Build & Run Locally
+#### Option 3: Build & Run Locally (Recommended for Other Macs)
+If installing on a different Mac without an official Apple Developer ID certificate, building from source directly on that machine ensures macOS correctly assigns local ad-hoc code signature entitlements and bypasses Gatekeeper restrictions:
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-2. Build the Universal Binary:
+2. Build the Universal Binary locally:
    ```bash
    ./build.sh
    ```
@@ -69,6 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/xuanmn/MySound/main/install.sh | ba
    ```bash
    open build/MySound.app
    ```
+*(Note: Requires Xcode Command Line Tools `xcode-select --install`).*
 
 ---
 
@@ -134,6 +137,7 @@ When you enable **Launch at Login** in the gear menu, MySound registers a login 
 
 ## 🛠 Troubleshooting
 
+- **App fails to control audio or open on another Mac?** Pre-built binaries are signed with an ad-hoc identity. On other Macs, Gatekeeper or TCC permission policies may block process tapping. Solve this by cloning the repository on that Mac and running `./build.sh` (Option 3).
 - **An app isn't appearing in the list?** MySound automatically detects applications when they start playing audio. Start sound playback in the app (e.g. play a song on Spotify or video on YouTube) and it will appear within 2 seconds.
 - **Volume slider doesn't change sound?** Ensure MySound has been granted Microphone/Audio Recording permissions under **System Settings > Privacy & Security > Microphone**.
 - **Audio distortion or lag?** MySound automatically matches your default audio output sample rate. Try restarting MySound or toggling your output device from the header menu.

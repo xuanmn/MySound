@@ -28,8 +28,10 @@ class AppManager: ObservableObject {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         
-        // Periodically refresh to catch apps that start/stop playing audio
-        self.timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        // Periodically refresh to catch apps that start/stop playing audio.
+        // 1.5s is sufficient — audio processes persist for seconds and
+        // EarTrumpet uses event-driven callbacks, not sub-second polling.
+        self.timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateApps()
             }
@@ -66,6 +68,23 @@ class AppManager: ObservableObject {
         DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 
+    // Icon cache to avoid re-reading .icns from app bundles every poll cycle.
+    // Keyed by bundleIdentifier for stability across relaunches.
+    nonisolated static var iconCache: [String: NSImage] = [:]
+    private static let iconCacheLock = NSLock()
+
+    nonisolated private static func cachedIcon(for app: NSRunningApplication) -> NSImage? {
+        guard let bundleID = app.bundleIdentifier else { return app.icon }
+        iconCacheLock.lock()
+        defer { iconCacheLock.unlock() }
+        if let cached = iconCache[bundleID] {
+            return cached
+        }
+        guard let icon = app.icon else { return nil }
+        iconCache[bundleID] = icon
+        return icon
+    }
+
     // Fix 11: removed extra blank line between allRunning and runningApps
     // nonisolated allows calling this from a background Task.detached (Fix 8)
     nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
@@ -80,7 +99,7 @@ class AppManager: ObservableObject {
         var newApps: [AppVolume] = []
         for app in runningApps {
             guard let name = app.localizedName,
-                  let icon = app.icon else { continue }
+                  let icon = cachedIcon(for: app) else { continue }
 
             let existingVolume = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume ?? 1.0
             newApps.append(AppVolume(pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
@@ -99,8 +118,9 @@ struct VolumeControlView: View {
     @State private var isGearHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
-    // Fix 7: store sync timer so it can be cancelled on disappear
-    @State private var syncTimer: Timer?
+    // Volume listener blocks — replace polling with CoreAudio property listeners
+    @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
+    @State private var muteListenerBlock: AudioObjectPropertyListenerBlock?
 
     @EnvironmentObject private var appManager: AppManager
     @EnvironmentObject private var tapManager: AudioTapManager
@@ -287,20 +307,13 @@ struct VolumeControlView: View {
                 checkLaunchAtLoginStatus()
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 
-                // Fix 7: store timer so it can be cancelled in onDisappear
-                syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-                    Task { @MainActor in
-                        let current = Double(tapManager.getSystemVolume())
-                        if (current <= 0.001) != (masterVolume <= 0.001) || abs(current - masterVolume) > 0.005 {
-                            masterVolume = current
-                        }
-                    }
-                }
+                // Replace 500ms polling timer with CoreAudio property listeners.
+                // These fire instantly when volume/mute changes and cost zero CPU when idle.
+                setupVolumeListeners()
             }
             .onDisappear {
-                // Fix 7: cancel timer when popup closes to prevent stacking
-                syncTimer?.invalidate()
-                syncTimer = nil
+                // Remove CoreAudio listeners when popup closes
+                removeVolumeListeners()
             }
 
             Divider()
@@ -525,6 +538,105 @@ struct VolumeControlView: View {
             return "speaker.wave.2.fill"
         }
     }
+
+    // MARK: - CoreAudio Volume/Mute Property Listeners
+    // Replaces the 500ms polling timer with event-driven callbacks.
+    // Cost: zero CPU when idle, instant response to changes.
+    private func setupVolumeListeners() {
+        removeVolumeListeners() // Clean up any stale listeners
+
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var deviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
+        ) == noErr else { return }
+
+        // Volume listener
+        var volAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        // Try main element first; some devices only expose per-channel (element 1)
+        if !AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
+            volAddr.mElement = 1
+        }
+        let volBlock: AudioObjectPropertyListenerBlock = { [weak tapManager] _, _ in
+            guard let tapManager = tapManager else { return }
+            Task { @MainActor in
+                let current = Double(tapManager.getSystemVolume())
+                // Can't capture $masterVolume in a non-Sendable block,
+                // so we post a notification to update the UI state.
+                NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
+            }
+        }
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, volBlock)
+        volumeListenerBlock = volBlock
+
+        // Mute listener
+        var muteAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        if !AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
+            muteAddr.mElement = 1
+        }
+        let muteBlock: AudioObjectPropertyListenerBlock = { [weak tapManager] _, _ in
+            guard let tapManager = tapManager else { return }
+            Task { @MainActor in
+                let current = Double(tapManager.getSystemVolume())
+                NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
+            }
+        }
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, muteBlock)
+        muteListenerBlock = muteBlock
+    }
+
+    private func removeVolumeListeners() {
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var deviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
+        ) == noErr else { return }
+
+        if let block = volumeListenerBlock {
+            var volAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+            // Also try element 1 in case that's where it was registered
+            volAddr.mElement = 1
+            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+            volumeListenerBlock = nil
+        }
+        if let block = muteListenerBlock {
+            var muteAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+            muteAddr.mElement = 1
+            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+            muteListenerBlock = nil
+        }
+    }
+}
 }
 
 struct AppVolumeRow: View {

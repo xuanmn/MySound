@@ -1,6 +1,12 @@
 import SwiftUI
 import AppKit
 import ServiceManagement
+import CoreAudio
+
+// Notification for CoreAudio volume/mute property listener callbacks
+extension Notification.Name {
+    static let mySoundSystemVolumeChanged = Notification.Name("mySoundSystemVolumeChanged")
+}
 
 struct AppVolume: Identifiable {
     var id: Int32 { pid } // Use PID as unique ID
@@ -70,8 +76,9 @@ class AppManager: ObservableObject {
 
     // Icon cache to avoid re-reading .icns from app bundles every poll cycle.
     // Keyed by bundleIdentifier for stability across relaunches.
-    nonisolated static var iconCache: [String: NSImage] = [:]
-    private static let iconCacheLock = NSLock()
+    // nonisolated(unsafe) because we manually synchronize with iconCacheLock.
+    nonisolated(unsafe) static var iconCache: [String: NSImage] = [:]
+    private nonisolated static let iconCacheLock = NSLock()
 
     nonisolated private static func cachedIcon(for app: NSRunningApplication) -> NSImage? {
         guard let bundleID = app.bundleIdentifier else { return app.icon }
@@ -507,6 +514,13 @@ struct VolumeControlView: View {
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         }
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
+        .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
+            if let volume = notification.userInfo?["volume"] as? Double {
+                if (volume <= 0.001) != (masterVolume <= 0.001) || abs(volume - masterVolume) > 0.005 {
+                    masterVolume = volume
+                }
+            }
+        }
     }
 
     private func toggleLaunchAtLogin(_ enabled: Bool) {
@@ -636,7 +650,6 @@ struct VolumeControlView: View {
             muteListenerBlock = nil
         }
     }
-}
 }
 
 struct AppVolumeRow: View {

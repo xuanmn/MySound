@@ -45,7 +45,15 @@ hdiutil detach "$MOUNT_DIR" -quiet
 
 echo "🛡️  Clearing Gatekeeper quarantine & refreshing local signature..."
 xattr -rd com.apple.quarantine "$APP_PATH" 2>/dev/null || true
-codesign --force --deep --sign - "$APP_PATH" 2>/dev/null || true
+# Preserve entitlements when re-signing — without this, the system-audio-capture
+# and audio-input entitlements are stripped, causing process tap failures.
+ENTITLEMENTS_TMP="${TMP_DIR}/entitlements.plist"
+codesign -d --entitlements - "$APP_PATH" > "$ENTITLEMENTS_TMP" 2>/dev/null || true
+if [ -s "$ENTITLEMENTS_TMP" ]; then
+    codesign --force --deep --sign - --entitlements "$ENTITLEMENTS_TMP" "$APP_PATH" 2>/dev/null || true
+else
+    codesign --force --deep --sign - "$APP_PATH" 2>/dev/null || true
+fi
 
 echo "================================================="
 echo "✅  MySound installed successfully to /Applications!"

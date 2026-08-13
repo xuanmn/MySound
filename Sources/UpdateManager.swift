@@ -48,6 +48,13 @@ class UpdateManager: ObservableObject {
     private let versionURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/version.json")!
     private let githubApiURL = URL(string: "https://api.github.com/repos/xuanmn/MySound/releases/latest")!
     
+    // Single shared ephemeral session — avoids creating new TLS connections per check
+    private nonisolated static let ephemeralSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(configuration: config)
+    }()
+    
     func checkForUpdates(manual: Bool = false) {
         guard !isChecking && !isDownloading else { return }
         
@@ -84,10 +91,7 @@ class UpdateManager: ObservableObject {
         do {
             var request = URLRequest(url: versionURL)
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            let config = URLSessionConfiguration.ephemeral
-            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            let session = URLSession(configuration: config)
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await Self.ephemeralSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
             return try JSONDecoder().decode(UpdateInfo.self, from: data)
         } catch {
@@ -100,10 +104,7 @@ class UpdateManager: ObservableObject {
             var request = URLRequest(url: githubApiURL)
             request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            let config = URLSessionConfiguration.ephemeral
-            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            let session = URLSession(configuration: config)
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await Self.ephemeralSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
             return try JSONDecoder().decode(GitHubRelease.self, from: data)
         } catch {
@@ -164,14 +165,22 @@ class UpdateManager: ObservableObject {
 
         Task {
             do {
-                var (asyncBytes, response) = try await URLSession.shared.bytes(from: zipURL)
+                // Use URLSession.download for efficient streaming instead of
+                // byte-by-byte append which caused ~5M Data.append() calls.
+                let delegate = DownloadProgressDelegate { [weak self] progress in
+                    Task { @MainActor in
+                        self?.downloadProgress = progress
+                        self?.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
+                    }
+                }
+                let downloadSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
                 
-                // If GitHub release zip URL bails 404 (release asset not created yet), fallback to raw GitHub main branch asset
+                var (tempFileURL, response) = try await downloadSession.download(from: zipURL)
+                
+                // If GitHub release zip URL returns 404, fallback to raw GitHub
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 404 {
                     if let rawFallbackURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/build/MySound.zip") {
-                        let (fallbackBytes, fallbackResp) = try await URLSession.shared.bytes(from: rawFallbackURL)
-                        asyncBytes = fallbackBytes
-                        response = fallbackResp
+                        (tempFileURL, response) = try await downloadSession.download(from: rawFallbackURL)
                     }
                 }
 
@@ -179,45 +188,37 @@ class UpdateManager: ObservableObject {
                     throw NSError(domain: "UpdateError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to download update package (HTTP status \((response as? HTTPURLResponse)?.statusCode ?? 0)). Please ensure a release asset is published on GitHub."])
                 }
                 
-                let expectedLength = response.expectedContentLength
                 let tempZipURL = FileManager.default.temporaryDirectory.appendingPathComponent("MySound_Update.zip")
-                
                 if FileManager.default.fileExists(atPath: tempZipURL.path) {
                     try? FileManager.default.removeItem(at: tempZipURL)
                 }
-                
-                var data = Data()
-                if expectedLength > 0 {
-                    data.reserveCapacity(Int(expectedLength))
-                }
-                
-                for try await byte in asyncBytes {
-                    data.append(byte)
-                    if expectedLength > 0 {
-                        let progress = Double(data.count) / Double(expectedLength)
-                        await MainActor.run {
-                            self.downloadProgress = progress
-                            self.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
-                        }
-                    }
-                }
-                
-                try data.write(to: tempZipURL)
+                try FileManager.default.moveItem(at: tempFileURL, to: tempZipURL)
                 
                 await MainActor.run {
+                    self.downloadProgress = 1.0
                     self.updateStatus = "Extracting update..."
                 }
                 
                 let tempExtractDir = FileManager.default.temporaryDirectory.appendingPathComponent("MySound_Update_\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: tempExtractDir, withIntermediateDirectories: true)
                 
+                // Use async-safe process execution instead of blocking waitUntilExit()
                 let dittoProcess = Process()
                 dittoProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
                 dittoProcess.arguments = ["-x", "-k", tempZipURL.path, tempExtractDir.path]
-                try dittoProcess.run()
-                dittoProcess.waitUntilExit()
                 
-                guard dittoProcess.terminationStatus == 0 else {
+                let dittoStatus = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+                    dittoProcess.terminationHandler = { process in
+                        continuation.resume(returning: process.terminationStatus)
+                    }
+                    do {
+                        try dittoProcess.run()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                
+                guard dittoStatus == 0 else {
                     throw NSError(domain: "UpdateError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to extract update package."])
                 }
                 
@@ -302,3 +303,24 @@ class UpdateManager: ObservableObject {
     }
 }
 
+// URLSession delegate for download progress tracking.
+// Used by performInAppUpdate() to report progress without byte-by-byte streaming.
+class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+    private let progressHandler: @Sendable (Double) -> Void
+
+    init(progressHandler: @escaping @Sendable (Double) -> Void) {
+        self.progressHandler = progressHandler
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        if totalBytesExpectedToWrite > 0 {
+            let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+            progressHandler(progress)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // The download(from:) async API handles the completion;
+        // this delegate method is required by the protocol but unused.
+    }
+}

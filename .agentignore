@@ -1,0 +1,24 @@
+# Build Artifacts & Binaries
+build/
+*.app/
+*.dmg
+*.zip
+*.dSYM/
+.build/
+DerivedData/
+
+# Logs & Runtime Dumps
+*.log
+debug.log
+log.txt
+
+# OS & Editor Metadata
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Large Binary Media Assets (keeps token context focused on code)
+Resources/*.icns
+Resources/*.png

@@ -3,40 +3,73 @@ import AppKit
 import ServiceManagement
 import CoreAudio
 
-// Notification for CoreAudio volume/mute property listener callbacks
+// =============================================================================
+// MARK: - Notifications
+// =============================================================================
+
 extension Notification.Name {
+    /// Posted when CoreAudio HAL property listeners detect a change in system master volume or mute status.
     static let mySoundSystemVolumeChanged = Notification.Name("mySoundSystemVolumeChanged")
 }
 
+// =============================================================================
+// MARK: - App Volume Model
+// =============================================================================
+
+/// `AppVolume` represents an individual running application row displayed in the MySound mixer.
 struct AppVolume: Identifiable {
-    var id: Int32 { pid } // Use PID as unique ID
+    /// Use the application's Process Identifier (PID) as its unique SwiftUI identity.
+    var id: Int32 { pid }
+    /// Operating system Process Identifier.
     let pid: pid_t
+    /// Localized display name (e.g. "Spotify", "Google Chrome").
     let name: String
+    /// Cached application icon image.
     let icon: NSImage
+    /// Current volume scalar for this application (0.0...1.0).
     var volume: Double
 }
 
+// =============================================================================
+// MARK: - App Manager
+// =============================================================================
+
+/// `AppManager` observes running macOS applications, determines which ones are actively producing audio,
+/// and maintains the list of active application volume controls.
 @MainActor
 class AppManager: ObservableObject {
+    /// Shared singleton instance.
     static let shared = AppManager()
+    
+    /// Published list of apps currently playing audio, bound to the SwiftUI view.
     @Published var apps: [AppVolume] = []
+    
+    /// Polling timer to detect when apps start or stop playing audio.
     private var timer: Timer?
 
     init() {
-        // Don't call expensive getRunningApps() synchronously on @MainActor init —
-        // it blocks the main thread with CoreAudio/proc_pidpath calls.
-        // Defer to an async task so the UI can appear immediately.
+        // Defer initial app discovery to an async task on the main actor to avoid
+        // blocking UI rendering during initial application launch.
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.apps = Self.getRunningApps(existingApps: [])
         }
 
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateApps), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        // Listen for application lifecycle events from NSWorkspace
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(updateApps),
+            name: NSWorkspace.didLaunchApplicationNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(updateApps),
+            name: NSWorkspace.didTerminateApplicationNotification,
+            object: nil
+        )
         
-        // Periodically refresh to catch apps that start/stop playing audio.
-        // 1.5s is sufficient — audio processes persist for seconds and
-        // EarTrumpet uses event-driven callbacks, not sub-second polling.
+        // Periodically refresh (every 1.5 seconds) to catch audio playback start/stop events.
         self.timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateApps()
@@ -44,27 +77,32 @@ class AppManager: ObservableObject {
         }
     }
 
-    // Fix 9: invalidate timer on deinit to prevent it firing after deallocation
     deinit {
+        // Invalidate timer to prevent execution after deallocation
         timer?.invalidate()
     }
 
-    // Fix 8: run expensive work on a background task to avoid main-thread stalls
-    // Bug #8 fix: debounce to prevent overlapping timer fires from racing
+    // Debounce work item to prevent overlapping background queries
     private var pendingUpdate: DispatchWorkItem?
 
+    /// Refreshes the list of active audio-producing applications on a background queue.
     @objc func updateApps(notification: Notification? = nil) {
         pendingUpdate?.cancel()
         let existingApps = self.apps
+        
         let workItem = DispatchWorkItem { [weak self] in
             let newApps = Self.getRunningApps(existingApps: existingApps)
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 let currentPIDs = self.apps.map { $0.pid }
                 let newPIDs = newApps.map { $0.pid }
+                
+                // Only trigger SwiftUI view updates if the list of active PIDs changed
                 if currentPIDs != newPIDs {
                     self.apps = newApps
                 }
+                
+                // Ensure taps exist for all active apps
                 for app in newApps {
                     AudioTapManager.shared.ensureTapCreated(for: app.pid)
                 }
@@ -74,12 +112,15 @@ class AppManager: ObservableObject {
         DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 
-    // Icon cache to avoid re-reading .icns from app bundles every poll cycle.
-    // Keyed by bundleIdentifier for stability across relaunches.
-    // nonisolated(unsafe) because we manually synchronize with iconCacheLock.
+    // -------------------------------------------------------------------------
+    // MARK: - Icon Cache
+    // Reading .icns files from disk on every poll cycle is expensive.
+    // We cache NSImages by bundleIdentifier for fast memory lookup.
+    // -------------------------------------------------------------------------
     nonisolated(unsafe) static var iconCache: [String: NSImage] = [:]
     private nonisolated static let iconCacheLock = NSLock()
 
+    /// Retrieves an application's icon from memory cache or loads it from the application bundle.
     nonisolated private static func cachedIcon(for app: NSRunningApplication) -> NSImage? {
         guard let bundleID = app.bundleIdentifier else { return app.icon }
         iconCacheLock.lock()
@@ -92,10 +133,14 @@ class AppManager: ObservableObject {
         return icon
     }
 
-    // Fix 11: removed extra blank line between allRunning and runningApps
-    // nonisolated allows calling this from a background Task.detached (Fix 8)
+    /// Queries running GUI applications and cross-references them against active CoreAudio audio streams.
+    /// - Parameter existingApps: Currently tracked apps (used to preserve user-adjusted volume sliders).
+    /// - Returns: Sorted list of `AppVolume` instances representing audio-playing applications.
     nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
+        // Step 1: Query CoreAudio for all PIDs actively outputting audio
         let activeAudioPIDs = AudioTapManager.getAudioActivePIDs(onlyPlayingAudio: true)
+        
+        // Step 2: Query NSWorkspace for regular GUI applications (ignoring background daemons)
         let allRunning = NSWorkspace.shared.runningApplications
         let runningApps = allRunning.filter { app in
             let isRegular = app.activationPolicy == .regular
@@ -103,6 +148,7 @@ class AppManager: ObservableObject {
             return isRegular && isActive
         }
 
+        // Step 3: Construct AppVolume models preserving prior volume adjustments
         var newApps: [AppVolume] = []
         for app in runningApps {
             guard let name = app.localizedName,
@@ -112,10 +158,23 @@ class AppManager: ObservableObject {
             newApps.append(AppVolume(pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
         }
 
-        return newApps.sorted(by: { $0.name < $1.name })
+        // Return alphabetically sorted list
+        return newApps.sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
     }
 }
 
+// =============================================================================
+// MARK: - Main Volume Control View
+// =============================================================================
+
+/// `VolumeControlView` is the primary popover interface for MySound.
+///
+/// Sections:
+/// - In-App Update Banner: Live progress when updating or prompt when a new version is found.
+/// - Header: Output device picker, "Mute All" toggle, and Master System Volume slider.
+/// - Permission Guidance Banner: Shown if System Audio Recording permission is not granted.
+/// - Application Mixer List: Individual volume controls for each sound-producing app.
+/// - Footer: Quit shortcut, version indicator, and Settings gear menu.
 struct VolumeControlView: View {
     @State private var masterVolume: Double = 0.5
     @State private var previousMasterVolume: Double = 0.5
@@ -125,21 +184,24 @@ struct VolumeControlView: View {
     @State private var isGearHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
-    // Volume listener blocks — replace polling with CoreAudio property listeners
+    
+    // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
     @State private var muteListenerBlock: AudioObjectPropertyListenerBlock?
 
     @EnvironmentObject private var appManager: AppManager
     @EnvironmentObject private var tapManager: AudioTapManager
-    // Fix 10: consume UpdateManager via EnvironmentObject (injected from App.swift)
     @EnvironmentObject private var updateManager: UpdateManager
 
+    /// Returns `true` if all active applications are currently muted.
     private var isAllMuted: Bool {
         !appManager.apps.isEmpty && appManager.apps.allSatisfy { $0.volume <= 0.001 }
     }
 
+    /// Toggles all applications between muted (0%) and their previously saved volumes.
     private func toggleMuteAll() {
         if isAllMuted {
+            // Unmute: Restore previous volume or default to 100%
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
                 let restored = savedAppVolumes[pid] ?? 1.0
@@ -147,6 +209,7 @@ struct VolumeControlView: View {
                 tapManager.setVolume(for: pid, volume: Float(appManager.apps[i].volume))
             }
         } else {
+            // Mute All: Save current volumes and set all to 0
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
                 if appManager.apps[i].volume > 0.001 {
@@ -160,8 +223,11 @@ struct VolumeControlView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Update Banner
+            // -----------------------------------------------------------------
+            // MARK: Update Banner
+            // -----------------------------------------------------------------
             if updateManager.isDownloading {
+                // Active download progress
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Image(systemName: "arrow.triangle.2.circlepath")
@@ -180,6 +246,7 @@ struct VolumeControlView: View {
                 .background(Color.blue.opacity(0.1))
                 Divider()
             } else if updateManager.isUpdateAvailable {
+                // Update ready prompt button
                 Button(action: {
                     updateManager.performInAppUpdate()
                 }) {
@@ -200,9 +267,12 @@ struct VolumeControlView: View {
                 Divider()
             }
 
-            // Header / Master Volume
+            // -----------------------------------------------------------------
+            // MARK: Header & Master Volume
+            // -----------------------------------------------------------------
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
+                    // Output device selection dropdown
                     if tapManager.availableOutputDevices.count > 1 {
                         Menu {
                             ForEach(tapManager.availableOutputDevices) { device in
@@ -240,6 +310,8 @@ struct VolumeControlView: View {
                     }
 
                     Spacer()
+                    
+                    // Batch Mute / Unmute Button
                     if !appManager.apps.isEmpty {
                         Button(action: toggleMuteAll) {
                             Text(isAllMuted ? "Unmute All" : "Mute All")
@@ -250,11 +322,15 @@ struct VolumeControlView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
                     }
+                    
+                    // Device type SF Symbol (AirPods, Headphones, TV, Speaker)
                     Image(systemName: deviceIconName(for: tapManager.currentOutputDevice?.name))
                         .foregroundColor(.secondary)
                 }
 
+                // Master Volume Slider Row
                 HStack(spacing: 8) {
+                    // Master Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {
                             masterVolume = 0
@@ -272,6 +348,7 @@ struct VolumeControlView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
                     
+                    // Custom Master Volume Slider
                     BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
                         .accessibilityLabel("System Master Volume")
                         .accessibilityValue("\(Int(masterVolume * 100)) percent")
@@ -292,11 +369,13 @@ struct VolumeControlView: View {
                             }
                             tapManager.setSystemVolume(Float(newValue))
                         }
+                        // Double-click to set master volume to 100%
                         .onTapGesture(count: 2) {
                             masterVolume = 1.0
                             tapManager.setSystemVolume(1.0)
                         }
                     
+                    // Percentage readout
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption.monospacedDigit())
                         .foregroundColor(.secondary)
@@ -314,18 +393,19 @@ struct VolumeControlView: View {
                 checkLaunchAtLoginStatus()
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 
-                // Replace 500ms polling timer with CoreAudio property listeners.
-                // These fire instantly when volume/mute changes and cost zero CPU when idle.
+                // Set up event-driven CoreAudio property listeners for master volume
                 setupVolumeListeners()
             }
             .onDisappear {
-                // Remove CoreAudio listeners when popup closes
+                // Remove listeners when the popover closes to conserve system resources
                 removeVolumeListeners()
             }
 
             Divider()
 
-            // In-App Permission Guidance Banner
+            // -----------------------------------------------------------------
+            // MARK: Permission Guidance Banner
+            // -----------------------------------------------------------------
             if !hasPermission {
                 VStack(spacing: 8) {
                     HStack(spacing: 8) {
@@ -369,9 +449,12 @@ struct VolumeControlView: View {
                 Divider()
             }
 
-            // App Volumes
+            // -----------------------------------------------------------------
+            // MARK: App Volume Mixer List
+            // -----------------------------------------------------------------
             VStack(spacing: 0) {
                 if appManager.apps.isEmpty {
+                    // Empty state when no app is playing sound
                     VStack(spacing: 8) {
                         Image(systemName: "speaker.wave.2.slash.fill")
                             .font(.system(size: 26))
@@ -400,6 +483,7 @@ struct VolumeControlView: View {
                     .padding(.vertical, 24)
                     .transition(.opacity)
                 } else {
+                    // List of apps currently producing sound
                     VStack(spacing: 8) {
                         ForEach($appManager.apps) { $app in
                             AppVolumeRow(app: $app) { newVolume in
@@ -418,8 +502,8 @@ struct VolumeControlView: View {
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
-                // Re-check permission every 3 seconds so the banner disappears
-                // once the user grants access without needing to relaunch
+                
+                // Re-check permissions every 3 seconds so banner vanishes when user approves in Settings
                 permissionCheckTimer?.invalidate()
                 permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
                     Task { @MainActor in
@@ -432,7 +516,7 @@ struct VolumeControlView: View {
                 permissionCheckTimer = nil
             }
             .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
-                // Handle terminated apps
+                // Remove taps for terminated applications
                 for pid in oldPids where !newPids.contains(pid) {
                     tapManager.removeTap(for: pid)
                 }
@@ -440,11 +524,12 @@ struct VolumeControlView: View {
 
             Divider()
 
-            // Footer
+            // -----------------------------------------------------------------
+            // MARK: Footer (Quit & Settings)
+            // -----------------------------------------------------------------
             HStack(spacing: 8) {
                 // Quit Button with Power Icon, ⌘Q Shortcut & Hover Effect
                 Button(action: {
-                    // Bug #5 fix: clean up all taps before quitting
                     tapManager.removeAllTaps()
                     NSApplication.shared.terminate(nil)
                 }) {
@@ -480,7 +565,7 @@ struct VolumeControlView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary.opacity(0.5))
 
-                // Settings Gear Menu with Hover Pill & Icon
+                // Settings Gear Menu
                 Menu {
                     Toggle("Launch at Login", isOn: $isLaunchAtLogin)
                         .onChange(of: isLaunchAtLogin) { _, newValue in
@@ -514,6 +599,7 @@ struct VolumeControlView: View {
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         }
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
+        // Observe system volume change notifications posted from CoreAudio property listeners
         .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
             if let volume = notification.userInfo?["volume"] as? Double {
                 if (volume <= 0.001) != (masterVolume <= 0.001) || abs(volume - masterVolume) > 0.005 {
@@ -523,6 +609,11 @@ struct VolumeControlView: View {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // MARK: - Helper Methods
+    // -------------------------------------------------------------------------
+
+    /// Registers or unregisters the app with macOS ServiceManagement for Launch at Login.
     private func toggleLaunchAtLogin(_ enabled: Bool) {
         let service = SMAppService.mainApp
         do {
@@ -536,10 +627,12 @@ struct VolumeControlView: View {
         }
     }
 
+    /// Queries the current Launch at Login registration status.
     private func checkLaunchAtLoginStatus() {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    /// Resolves an appropriate SF Symbol icon name based on the audio device name.
     private func deviceIconName(for name: String?) -> String {
         guard let name = name?.lowercased() else { return "speaker.wave.2.fill" }
         if name.contains("airpod") {
@@ -554,8 +647,9 @@ struct VolumeControlView: View {
     }
 
     // MARK: - CoreAudio Volume/Mute Property Listeners
-    // Replaces the 500ms polling timer with event-driven callbacks.
-    // Cost: zero CPU when idle, instant response to changes.
+    // Event-driven callbacks replace polling timers, using zero CPU when idle.
+
+    /// Registers CoreAudio HAL property listeners on the default output device for volume and mute state.
     private func setupVolumeListeners() {
         removeVolumeListeners() // Clean up any stale listeners
 
@@ -571,13 +665,12 @@ struct VolumeControlView: View {
             &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
         ) == noErr else { return }
 
-        // Volume listener
+        // Volume property listener
         var volAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
-        // Try main element first; some devices only expose per-channel (element 1)
         if !AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
             volAddr.mElement = 1
         }
@@ -585,15 +678,13 @@ struct VolumeControlView: View {
             guard let tapManager = tapManager else { return }
             Task { @MainActor in
                 let current = Double(tapManager.getSystemVolume())
-                // Can't capture $masterVolume in a non-Sendable block,
-                // so we post a notification to update the UI state.
                 NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
             }
         }
         AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, volBlock)
         volumeListenerBlock = volBlock
 
-        // Mute listener
+        // Mute property listener
         var muteAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
@@ -613,6 +704,7 @@ struct VolumeControlView: View {
         muteListenerBlock = muteBlock
     }
 
+    /// Unregisters CoreAudio volume and mute property listeners.
     private func removeVolumeListeners() {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -633,7 +725,6 @@ struct VolumeControlView: View {
                 mElement: kAudioObjectPropertyElementMain
             )
             AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
-            // Also try element 1 in case that's where it was registered
             volAddr.mElement = 1
             AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
             volumeListenerBlock = nil
@@ -652,6 +743,12 @@ struct VolumeControlView: View {
     }
 }
 
+// =============================================================================
+// MARK: - App Volume Row
+// =============================================================================
+
+/// `AppVolumeRow` renders a single application row with its icon, name, audio waveform badge,
+/// mute button, and volume slider.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
@@ -660,8 +757,9 @@ struct AppVolumeRow: View {
 
     var body: some View {
         VStack(spacing: 4) {
+            // Row Top: Icon, App Name, Waveform badge, Percentage
             HStack {
-                // App Icon
+                // Application Icon
                 Image(nsImage: app.icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -674,6 +772,7 @@ struct AppVolumeRow: View {
                         .fontWeight(.medium)
                         .foregroundColor(app.volume <= 0.001 ? .secondary : .primary)
 
+                    // Audio activity waveform indicator
                     if app.volume > 0.001 {
                         Image(systemName: "waveform")
                             .font(.caption2)
@@ -684,13 +783,16 @@ struct AppVolumeRow: View {
 
                 Spacer()
 
+                // Percentage readout
                 Text("\(Int(app.volume * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.secondary)
                     .frame(width: 36, alignment: .trailing)
             }
 
+            // Row Bottom: Mute Button & Custom Slider
             HStack(spacing: 8) {
+                // Per-app Mute Button
                 Button(action: {
                     if app.volume > 0.001 {
                         previousVolume = app.volume
@@ -709,6 +811,7 @@ struct AppVolumeRow: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
+                // Custom App Volume Slider
                 BoxySlider(value: $app.volume, range: 0...1, tint: app.volume <= 0.001 ? .gray.opacity(0.4) : .blue)
                     .accessibilityLabel("\(app.name) volume")
                     .accessibilityValue("\(Int(app.volume * 100)) percent")
@@ -721,9 +824,6 @@ struct AppVolumeRow: View {
                         @unknown default:
                             break
                         }
-                        // Note: do NOT call onVolumeChange here —
-                        // onChange(of: app.volume) fires automatically and handles it,
-                        // preventing a double setVolume call per accessibility step.
                     }
                     .onChange(of: app.volume) { _, newValue in
                         if newValue > 0.001 {
@@ -731,6 +831,7 @@ struct AppVolumeRow: View {
                         }
                         onVolumeChange(Float(newValue))
                     }
+                    // Double-click to set application volume to 100%
                     .onTapGesture(count: 2) {
                         app.volume = 1.0
                         onVolumeChange(1.0)
@@ -755,6 +856,14 @@ struct AppVolumeRow: View {
     }
 }
 
+// =============================================================================
+// MARK: - Custom macOS Boxy Slider Component
+// =============================================================================
+
+/// `BoxySlider` is a custom SwiftUI slider styled to match modern macOS system sliders:
+/// - Ultra-thin horizontal track.
+/// - Rounded capsule thumb handle with subtle drop shadow and hover outline.
+/// - Smooth drag gesture with snap-to-edge boundaries.
 struct BoxySlider: View {
     @Binding var value: Double
     var range: ClosedRange<Double> = 0...1
@@ -775,17 +884,17 @@ struct BoxySlider: View {
             let fillWidth = percent * usableWidth + (thumbWidth / 2)
 
             ZStack(alignment: .leading) {
-                // Background Track (Ultra-Skinny Bar)
+                // Background Track (Inactive Bar)
                 Rectangle()
                     .fill(Color.primary.opacity(0.15))
                     .frame(height: trackHeight)
 
-                // Filled Track (Ultra-Skinny Bar)
+                // Filled Track (Active Color Bar)
                 Rectangle()
                     .fill(tint)
                     .frame(width: fillWidth, height: trackHeight)
 
-                // Horizontal Pill / Capsule Thumb Handle (matching screenshot)
+                // Horizontal Pill / Capsule Thumb Handle
                 Capsule()
                     .fill(Color(white: 0.92))
                     .overlay(
@@ -808,6 +917,7 @@ struct BoxySlider: View {
                         let locationX = gesture.location.x - (thumbWidth / 2)
                         let newPercent = max(0, min(1, locationX / usableWidth))
                         var newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
+                        // Snap to clean 0% or 100% near edges
                         if newValue < 0.005 {
                             newValue = 0.0
                         } else if newValue > 0.995 {
@@ -824,6 +934,12 @@ struct BoxySlider: View {
     }
 }
 
+// =============================================================================
+// MARK: - Native Frosted Glass Visual Effect
+// =============================================================================
+
+/// `VisualEffectView` bridges AppKit's `NSVisualEffectView` to SwiftUI, providing native macOS
+/// frosted-glass popover materials and translucency behind the window.
 struct VisualEffectView: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
@@ -841,3 +957,4 @@ struct VisualEffectView: NSViewRepresentable {
         nsView.blendingMode = blendingMode
     }
 }
+

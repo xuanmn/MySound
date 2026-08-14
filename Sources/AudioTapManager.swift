@@ -5,21 +5,50 @@ import os
 import CoreGraphics
 import Accelerate
 
-// Declare private Core Audio functions (macOS 14.2+)
+// =============================================================================
+// MARK: - Private CoreAudio Process Tap C SPI (macOS 14.2+)
+// =============================================================================
+//
+// In macOS Sonoma (14.2+), Apple introduced private CoreAudio APIs for Process Taps.
+// A Process Tap allows an application with the "System Audio Recording" permission
+// to intercept the audio output stream of specific processes (by AudioObjectID)
+// and mute/redirect them into a custom CoreAudio Aggregate Device.
+//
+// Because these C functions are private SPIs (System Programming Interfaces),
+// we declare them using Swift's `@_silgen_name` to link directly against CoreAudio.framework.
+
 #if canImport(CoreAudio)
+/// Creates an audio tap targeting one or more process audio object IDs.
+/// - Parameters:
+///   - description: Configuration including process object IDs, mute behavior, and private flags.
+///   - tapID: Pointer to receive the allocated AudioObjectID for the tap.
 @_silgen_name("AudioHardwareCreateProcessTap")
 func AudioHardwareCreateProcessTap(_ description: CATapDescription, _ tapID: UnsafeMutablePointer<AudioObjectID>) -> OSStatus
 
+/// Destroys a previously created process tap.
+/// - Parameter tapID: The AudioObjectID of the tap to destroy.
 @_silgen_name("AudioHardwareDestroyProcessTap")
 func AudioHardwareDestroyProcessTap(_ tapID: AudioObjectID) -> OSStatus
 
+/// Creates a virtual Aggregate Device that binds the process tap input to the physical hardware output.
+/// - Parameters:
+///   - inDescription: CFDictionary containing keys for sub-devices, taps, clock sync, and drift compensation.
+///   - outDeviceID: Pointer to receive the allocated AudioObjectID for the aggregate device.
 @_silgen_name("AudioHardwareCreateAggregateDevice")
 func AudioHardwareCreateAggregateDevice(_ inDescription: CFDictionary, _ outDeviceID: UnsafeMutablePointer<AudioObjectID>) -> OSStatus
 
+/// Destroys a previously created aggregate device.
+/// - Parameter inDeviceID: The AudioObjectID of the aggregate device to destroy.
 @_silgen_name("AudioHardwareDestroyAggregateDevice")
 func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatus
 #endif
 
+// =============================================================================
+// MARK: - File Logger
+// =============================================================================
+
+/// `AppLogger` provides lightweight diagnostic logging to `~/Library/Logs/MySound.log`.
+/// Useful for debugging CoreAudio OSStatus errors in production and development.
 final class AppLogger: @unchecked Sendable {
     static let shared = AppLogger()
     private let logFileURL: URL?
@@ -34,6 +63,7 @@ final class AppLogger: @unchecked Sendable {
         }
     }
 
+    /// Writes a timestamped log message to NSLog and the log file.
     func log(_ message: String) {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
         let logLine = "[\(timestamp)] \(message)\n"
@@ -51,24 +81,35 @@ final class AppLogger: @unchecked Sendable {
     }
 }
 
-// Bug #3 fix: Shared volume store — Sendable, not actor-isolated,
-// safe for the real-time audio thread to read from.
+// =============================================================================
+// MARK: - Thread-Safe Volume Store
+// =============================================================================
+
+/// `VolumeStore` provides a thread-safe, lock-protected dictionary mapping process IDs (PIDs) to volume scalars (0.0...1.0).
+///
+/// Real-Time Audio Safety:
+/// - The CoreAudio IO callback runs on a high-priority real-time audio thread.
+/// - It must never perform Swift actor calls, dispatch queue syncs, or allocate memory.
+/// - `os_unfair_lock` provides low-overhead, spin-free locking safe for quick scalar lookups in the audio thread.
 final class VolumeStore: @unchecked Sendable {
     private var _lock = os_unfair_lock_s()
     private var volumes: [pid_t: Float] = [:]
 
+    /// Retrieves the volume for a given PID. Defaults to 1.0 (100%) if not explicitly set.
     func get(_ pid: pid_t) -> Float {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
         return volumes[pid] ?? 1.0
     }
 
+    /// Updates the volume scalar for a given PID.
     func set(_ pid: pid_t, _ volume: Float) {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
         volumes[pid] = volume
     }
 
+    /// Cleans up stored volume entry when an application terminates.
     func remove(_ pid: pid_t) {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
@@ -76,10 +117,17 @@ final class VolumeStore: @unchecked Sendable {
     }
 }
 
+// =============================================================================
+// MARK: - Audio Activity Tracker
+// =============================================================================
+
+/// `AudioActivityTracker` tracks the most recent timestamp at which a process produced audible sound.
+/// Used to display live "waveform" badges in the UI and clean up taps for idle/terminated applications.
 final class AudioActivityTracker: @unchecked Sendable {
     private var _lock = os_unfair_lock_s()
     private var lastActivity: [pid_t: CFAbsoluteTime] = [:]
 
+    /// Records that the specified process produced non-silent audio right now.
     func recordActivity(for pid: pid_t) {
         let now = CFAbsoluteTimeGetCurrent()
         os_unfair_lock_lock(&_lock)
@@ -87,6 +135,7 @@ final class AudioActivityTracker: @unchecked Sendable {
         os_unfair_lock_unlock(&_lock)
     }
 
+    /// Checks if a process produced audio within the specified time window (default 1.0s).
     func isAudioActive(for pid: pid_t, window: TimeInterval = 1.0) -> Bool {
         let now = CFAbsoluteTimeGetCurrent()
         os_unfair_lock_lock(&_lock)
@@ -95,6 +144,7 @@ final class AudioActivityTracker: @unchecked Sendable {
         return (now - last) <= window
     }
 
+    /// Removes tracking for a terminated process.
     func remove(pid: pid_t) {
         os_unfair_lock_lock(&_lock)
         lastActivity.removeValue(forKey: pid)
@@ -102,9 +152,17 @@ final class AudioActivityTracker: @unchecked Sendable {
     }
 }
 
+// =============================================================================
+// MARK: - Audio Output Device Model
+// =============================================================================
+
+/// Encapsulates a hardware audio output device (e.g. MacBook Speakers, AirPods, External DAC).
 struct AudioOutputDevice: Identifiable, Hashable, Equatable {
+    /// CoreAudio AudioDeviceID (HAL integer identifier).
     let id: AudioDeviceID
+    /// User-friendly name (e.g. "MacBook Pro Speakers", "AirPods Pro").
     let name: String
+    /// Unique persistent string identifier (e.g. "BuiltInSpeakerDevice", Bluetooth address).
     let uid: String
 
     static func == (lhs: AudioOutputDevice, rhs: AudioOutputDevice) -> Bool {
@@ -117,10 +175,24 @@ struct AudioOutputDevice: Identifiable, Hashable, Equatable {
     }
 }
 
+// =============================================================================
+// MARK: - Audio Tap Manager
+// =============================================================================
+
+/// `AudioTapManager` is the core audio engine of MySound.
+///
+/// Responsibilities:
+/// 1. Intercepting per-app audio using private CoreAudio Process Taps (`CATapDescription`).
+/// 2. Creating Aggregate Devices linking intercepted taps back to physical output devices.
+/// 3. Applying real-time DSP gain scaling (`vDSP_vsmul`) per buffer in the audio IO callback.
+/// 4. Listening for hardware changes (default device switches, audio process life cycles).
+/// 5. Controlling global master volume and system mute states.
 @MainActor
 class AudioTapManager: NSObject, ObservableObject {
+    /// Shared singleton instance.
     static let shared = AudioTapManager()
 
+    /// Holds the active CoreAudio resources associated with an intercepted application.
     struct TapState {
         let tapID: AudioObjectID
         let aggregateID: AudioObjectID
@@ -129,32 +201,33 @@ class AudioTapManager: NSObject, ObservableObject {
         let createdAt: CFAbsoluteTime
     }
 
+    /// Map of active process taps keyed by PID.
     @Published var activeTaps: [pid_t: TapState] = [:]
+    /// Currently selected default output device.
     @Published var currentOutputDevice: AudioOutputDevice?
+    /// List of all detected output-capable audio devices on the system.
     @Published var availableOutputDevices: [AudioOutputDevice] = []
 
-    // Cache dlsym lookup once globally — avoids redundant symbol resolution on every call
+    /// Dynamically resolved pointer to private `responsibility_get_pid_responsible_for_pid` symbol in libproc.
+    /// This allows mapping sandboxed helper processes (like Chrome Helper or Safari WebContent) to their parent app.
     private nonisolated static let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = {
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid") else { return nil }
         return unsafeBitCast(symbol, to: (@convention(c) (pid_t) -> pid_t).self)
     }()
 
+    /// Lock-protected volume lookup table shared with real-time audio threads.
     let volumeStore = VolumeStore()
+    /// Lock-protected activity tracker for visual audio waveform indicators.
     nonisolated static let activityTracker = AudioActivityTracker()
 
-    /// Check if we actually have the System Audio Recording permission.
-    /// CGPreflightScreenCaptureAccess() checks Screen Capture TCC, NOT
-    /// System Audio Recording TCC — they are different permission categories.
-    /// The only reliable way is to attempt a lightweight tap creation.
+    // MARK: - Permissions
+
+    /// Determines whether MySound has been granted System Audio Recording / TCC permission.
+    ///
+    /// Why query `kAudioHardwarePropertyProcessObjectList`?
+    /// - `CGPreflightScreenCaptureAccess()` only checks Screen Capture TCC, NOT System Audio Recording TCC.
+    /// - On macOS 14.2+, querying the hardware process object list succeeds and returns entries only when TCC is authorized.
     nonisolated static func hasAudioCapturePermission() -> Bool {
-        // If we already have active taps, permission is clearly granted
-        // (avoids redundant tap-creation tests while the app is working)
-        if !activityTracker.isAudioActive(for: 0, window: 0) {
-            // Fallback: actually no-op, just check if we can query the process list
-            // which requires the entitlement to be present
-        }
-        // Try the lightweight check first: if process objects are visible
-        // then we have the necessary TCC permission
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
@@ -167,26 +240,27 @@ class AudioTapManager: NSObject, ObservableObject {
         )
         if status == noErr && processListSize > 0 {
             let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
-            // If we can see at least 1 audio process, TCC is granted
             return count > 0
         }
         return false
     }
 
+    /// Opens the appropriate System Settings Privacy pane for granting System Audio Recording permissions.
     nonisolated static func openSystemAudioPermissionSettings() {
-        // On macOS 15+ the System Audio Recording pane is separate
+        // macOS 15+ has a dedicated "System Audio Recording Only" privacy pane
         if #available(macOS 15.0, *) {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SystemAudioRecording") {
                 NSWorkspace.shared.open(url)
                 return
             }
         }
-        // Fallback: Screen & System Audio Recording is under Screen Recording on macOS 14
+        // macOS 14 groups System Audio Recording under "Screen & System Audio Recording"
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
     }
 
+    // MARK: - Listener Addresses & Blocks
     private var processListListenerAddress: AudioObjectPropertyAddress?
     private var processListListenerBlock: AudioObjectPropertyListenerBlock?
     private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
@@ -204,6 +278,9 @@ class AudioTapManager: NSObject, ObservableObject {
         setupCleanupTimer()
     }
 
+    // MARK: - Periodic Cleanup
+
+    /// Periodically cleans up taps for applications that have exited or stopped playing audio.
     private func setupCleanupTimer() {
         cleanupTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -212,20 +289,21 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    /// Evaluates active taps and tears down any whose apps are closed or inactive.
     func cleanupInactiveTaps() {
         let now = CFAbsoluteTimeGetCurrent()
-        // Deduplicate: collect unique TapStates by tapID to avoid double-cleanup
         var seenTapIDs = Set<AudioObjectID>()
         let currentActivePIDs = Array(activeTaps.keys)
         for pid in currentActivePIDs {
             guard let state = activeTaps[pid] else { continue }
-            // Skip if we already processed this tap (shared between targetPID and mainPID)
+            // Skip if we already evaluated this tap (shared between helper PID and main app PID)
             guard seenTapIDs.insert(state.tapID).inserted else { continue }
-            // Give new taps a 5-second grace period before cleanup can touch them.
-            // On Intel Macs, the aggregate device IO proc can take 1-3 seconds to start
-            // receiving audio buffers after creation.
+            
+            // Give newly created taps a 5-second grace period before cleanup can touch them.
+            // On Intel Macs, the aggregate device IO proc can take 1-3 seconds to start receiving audio buffers.
             let age = now - state.createdAt
             if age < 5.0 { continue }
+            
             let isRunning = NSRunningApplication(processIdentifier: pid) != nil
             let isActive = Self.activityTracker.isAudioActive(for: pid, window: 3.0)
             if !isRunning || !isActive {
@@ -234,13 +312,22 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Process Responsibility Resolution
+
+    /// Maps a given PID (which might be a helper sub-process) to its main top-level GUI application PID.
+    ///
+    /// Multi-process apps like Google Chrome, Discord, or Spotify play sound from helper processes.
+    /// This method traverses the responsibility tree and bundle paths so volume sliders map correctly.
     func getMainAppPID(for targetPID: pid_t) -> pid_t {
+        // Direct regular application match
         if let app = NSRunningApplication(processIdentifier: targetPID), app.activationPolicy == .regular {
             return targetPID
         }
+        // Check LaunchServices responsible PID via SPI
         if let respPID = Self.getResponsiblePID?(targetPID), let app = NSRunningApplication(processIdentifier: respPID), app.activationPolicy == .regular {
             return respPID
         }
+        // Fallback: match binary path against running application bundle paths
         if let procPath = Self.getPath(for: targetPID) {
             for app in NSWorkspace.shared.runningApplications {
                 if app.activationPolicy == .regular, let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
@@ -251,14 +338,16 @@ class AudioTapManager: NSObject, ObservableObject {
         return targetPID
     }
 
+    // MARK: - CoreAudio HAL Event Listeners
+
+    /// Registers a listener for system-wide process list changes (`kAudioHardwarePropertyProcessObjectList`).
     private func setupProcessListListener() {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        // Bug #7 fix: store the block object itself so deinit can pass the exact
-        // same pointer back to AudioObjectRemovePropertyListenerBlock.
+        // Store block reference so deinit can unregister the exact same pointer
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in
                 self?.refreshActiveTaps()
@@ -269,7 +358,9 @@ class AudioTapManager: NSObject, ObservableObject {
         processListListenerBlock = block
     }
 
+    /// Registers listeners for default output device changes and hardware device plug/unplug events.
     private func setupHardwareListeners() {
+        // Default output device change listener
         var defaultDevAddr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -284,6 +375,7 @@ class AudioTapManager: NSObject, ObservableObject {
         outputDeviceListenerAddress = defaultDevAddr
         outputDeviceListenerBlock = outputBlock
 
+        // Hardware device list change listener (e.g. connecting headphones or DAC)
         var devicesAddr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -299,6 +391,7 @@ class AudioTapManager: NSObject, ObservableObject {
         hardwareDevicesListenerBlock = devicesBlock
     }
 
+    /// Refreshes available output devices and recreates taps if the active output device changed.
     func refreshOutputDevices() {
         let devices = getAvailableOutputDevices()
         let current = getDefaultOutputDevice()
@@ -306,10 +399,12 @@ class AudioTapManager: NSObject, ObservableObject {
         self.availableOutputDevices = devices
         self.currentOutputDevice = current
         if deviceChanged && current != nil {
+            // Re-bind all active taps to the new physical output device
             recreateAllTaps()
         }
     }
 
+    /// Destroys and recreates all process taps (e.g. when switching from Speakers to Headphones).
     func recreateAllTaps() {
         let currentPIDs = Array(activeTaps.keys)
         removeAllTaps()
@@ -318,18 +413,20 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    /// Checks active taps to see if underlying AudioObjectIDs have changed (e.g. app reopened a stream).
     private func refreshActiveTaps() {
         for (pid, state) in activeTaps {
             let currentObjectIDs = getAudioObjectIDs(for: pid)
             if Set(currentObjectIDs) != Set(state.objectIDs) && !currentObjectIDs.isEmpty {
-                // Re-create tap with updated AudioObjectIDs
                 removeTap(for: pid)
                 createTap(for: pid)
             }
         }
     }
 
+    // MARK: - Tap & Volume Management
 
+    /// Ensures a tap is created for a given PID if not already established.
     func ensureTapCreated(for targetPID: pid_t) {
         let pid = getMainAppPID(for: targetPID)
         if activeTaps[pid] == nil && activeTaps[targetPID] == nil {
@@ -337,6 +434,7 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    /// Updates the volume multiplier (0.0...1.0) for a target application PID.
     func setVolume(for targetPID: pid_t, volume: Float) {
         let mainPID = getMainAppPID(for: targetPID)
         volumeStore.set(mainPID, volume)
@@ -347,8 +445,19 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Tap Creation Engine
+
+    /// Creates and activates a Process Tap + Aggregate Device pipeline for the target PID.
+    ///
+    /// Pipeline Architecture:
+    /// 1. `CATapDescription`: Identifies the target process's AudioObjectIDs and sets mute behavior.
+    /// 2. `AudioHardwareCreateProcessTap`: Hooks into the CoreAudio HAL server.
+    /// 3. `AudioHardwareCreateAggregateDevice`: Creates a virtual output device linking the tap input
+    ///    to the physical output device with clock sync and drift compensation.
+    /// 4. `AudioDeviceCreateIOProcIDWithBlock`: Attaches an IO callback where audio samples are received,
+    ///    multiplied by the volume scalar using Accelerate SIMD (`vDSP_vsmul`), and sent to the speakers.
+    /// 5. `AudioDeviceStart`: Starts the audio rendering clock on the aggregate device.
     private func createTap(for targetPID: pid_t) {
-        // Fix 5: guard against running on unsupported macOS versions
         guard #available(macOS 14.2, *) else {
             AppLogger.shared.log("Process taps require macOS 14.2 or later.")
             return
@@ -368,7 +477,7 @@ class AudioTapManager: NSObject, ObservableObject {
             return
         }
 
-        // Check if any of these objectIDs are already tapped by another activeTap
+        // Prevent duplicate tap creation on object IDs already being processed
         let allTappedObjectIDs = Set(activeTaps.values.flatMap { $0.objectIDs })
         if !Set(objectIDs).isDisjoint(with: allTappedObjectIDs) {
             AppLogger.shared.log("Skipping tap for PID \(targetPID) - objectIDs already tapped.")
@@ -382,26 +491,29 @@ class AudioTapManager: NSObject, ObservableObject {
         var tapID: AudioObjectID = 0
         var status: OSStatus = -1
 
-        // Stage 1: .muted + isPrivate (best quality — silences original, routes through IO proc)
+        // ---------------------------------------------------------------------
+        // Cascading Tap Creation Strategy:
+        // Stage 1: .muted + isPrivate (Optimal — silences original audio at source, routes solely through IO proc)
+        // Stage 2: .muted + !isPrivate (Fallback for systems where private taps are restricted)
+        // Stage 3: .unmuted + isPrivate (Fallback for certain audio drivers)
+        // Stage 4: .unmuted + !isPrivate (Permissive fallback)
+        // ---------------------------------------------------------------------
         tapDescription.muteBehavior = .muted
         tapDescription.isPrivate = true
         status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         if status != noErr {
             AppLogger.shared.log("Tap creation failed (status \(status)) with muted+private")
-            // Stage 2: .muted + !isPrivate
             tapDescription.isPrivate = false
             status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         }
         if status != noErr {
             AppLogger.shared.log("Tap creation failed (status \(status)) with muted+public")
-            // Stage 3: .unmuted + isPrivate
             tapDescription.muteBehavior = .unmuted
             tapDescription.isPrivate = true
             status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         }
         if status != noErr {
             AppLogger.shared.log("Tap creation failed (status \(status)) with unmuted+private")
-            // Stage 4: .unmuted + !isPrivate
             tapDescription.isPrivate = false
             status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         }
@@ -412,7 +524,10 @@ class AudioTapManager: NSObject, ObservableObject {
         }
         AppLogger.shared.log("AudioHardwareCreateProcessTap succeeded for PID \(targetPID) (mute=\(tapDescription.muteBehavior.rawValue), private=\(tapDescription.isPrivate))")
 
-        // Build aggregate description with cascading fallbacks for Intel/macOS 14/15
+        // ---------------------------------------------------------------------
+        // Aggregate Device Descriptor:
+        // Combines the physical sub-device and the tap sub-tap into a single clock domain.
+        // ---------------------------------------------------------------------
         let aggUID = UUID().uuidString
         var aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MySound-Tap-\(pid)" as NSString,
@@ -433,6 +548,7 @@ class AudioTapManager: NSObject, ObservableObject {
         var aggID: AudioObjectID = 0
         status = AudioHardwareCreateAggregateDevice(aggregateDesc as CFDictionary, &aggID)
 
+        // Cascading aggregate fallbacks for compatibility across Intel Macs & differing macOS versions
         if status != noErr {
             AppLogger.shared.log("Aggregate stage 1 failed (status \(status)), retrying without TapAutoStartKey...")
             aggregateDesc.removeValue(forKey: kAudioAggregateDeviceTapAutoStartKey)
@@ -466,6 +582,7 @@ class AudioTapManager: NSObject, ObservableObject {
         }
         AppLogger.shared.log("Aggregate device created successfully for PID \(pid) (aggID: \(aggID))")
 
+        // Standardize aggregate input format to 32-bit Float Linear PCM
         var currentFormat = AudioStreamBasicDescription()
         var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var formatAddr = AudioObjectPropertyAddress(
@@ -491,9 +608,14 @@ class AudioTapManager: NSObject, ObservableObject {
             }
         }
 
+        // ---------------------------------------------------------------------
+        // Real-Time Audio IO Callback:
+        // Executed by CoreAudio on a dedicated real-time high-priority thread.
+        // ---------------------------------------------------------------------
         let volumeStore = self.volumeStore
         var procID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { (now, inputData, inputTime, outputData, outputTime) in
+            // Read volume multiplier safely from lock-protected store
             let vol = min(volumeStore.get(pid), volumeStore.get(targetPID))
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
@@ -512,8 +634,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
                 let count = Int(min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4)
 
-                // Activity detection: check first 32 samples (or fewer) for non-silence
-                // instead of scanning every sample in the buffer.
+                // Silence detection: inspect the first 32 samples with Accelerate max magnitude
                 if !hasActiveAudio {
                     let checkCount = min(count, 32)
                     var maxVal: Float = 0
@@ -523,13 +644,17 @@ class AudioTapManager: NSObject, ObservableObject {
                     }
                 }
 
+                // Volume application
                 if vol == 0 {
+                    // Muted: zero out destination buffer memory
                     memset(dst, 0, Int(outputBuf.mDataByteSize))
                 } else {
-                    // Use vDSP SIMD-accelerated scalar multiply instead of
-                    // sample-by-sample loop — ~4-8x faster on Apple Silicon/Intel.
+                    // Accelerated SIMD vector-scalar multiplication: dst = src * gain
+                    // ~4-8x faster than manual per-sample loops on Apple Silicon & Intel
                     var gain = vol
                     vDSP_vsmul(src, 1, &gain, dst, 1, vDSP_Length(count))
+                    
+                    // Zero any trailing channel bytes if output buffer exceeds input buffer size
                     if outputBuf.mDataByteSize > inputBuf.mDataByteSize {
                         let extraBytes = Int(outputBuf.mDataByteSize - inputBuf.mDataByteSize)
                         memset(dst.advanced(by: count), 0, extraBytes)
@@ -542,14 +667,16 @@ class AudioTapManager: NSObject, ObservableObject {
             }
         }
 
+        // Start aggregate device audio playback
         if status == noErr, let proc = procID {
             let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs, createdAt: CFAbsoluteTimeGetCurrent())
             activeTaps[pid] = tapState
             activeTaps[targetPID] = tapState
-            // Record activity immediately so the cleanup timer doesn't destroy
-            // the tap before the IO proc has a chance to start on Intel Macs
+            
+            // Record activity immediately so the cleanup timer does not prematurely destroy the tap
             Self.activityTracker.recordActivity(for: pid)
             Self.activityTracker.recordActivity(for: targetPID)
+            
             let startStatus = AudioDeviceStart(aggID, proc)
             if startStatus != noErr {
                 AppLogger.shared.log("AudioDeviceStart failed for PID \(pid) with status: \(startStatus)")
@@ -568,13 +695,17 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Tap Teardown
+
+    /// Stops audio, destroys IO procs, and removes the aggregate device and tap for a given PID.
     func removeTap(for pid: pid_t) {
         guard let state = activeTaps[pid] else { return }
         _ = AudioDeviceStop(state.aggregateID, state.procID)
         _ = AudioDeviceDestroyIOProcID(state.aggregateID, state.procID)
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
-        // Remove ALL entries sharing this same tap (targetPID + mainPID both point to same TapState)
+        
+        // Remove all dictionary references pointing to this tap instance
         let tapID = state.tapID
         for (key, value) in activeTaps where value.tapID == tapID {
             Self.activityTracker.remove(pid: key)
@@ -583,21 +714,15 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
-    // Bug #5 fix: Explicit cleanup of all active taps.
-    // Call before deallocation or on app termination.
+    /// Tears down all active taps upon quit or output device reconfiguration.
     func removeAllTaps() {
         for pid in Array(activeTaps.keys) {
             removeTap(for: pid)
         }
     }
 
-    // Bug #5/#7 fix: Clean up property listeners when deallocated.
-    // Note: activeTaps cleanup should be done via removeAllTaps() before
-    // this point, since deinit is nonisolated and can't access @MainActor state.
     deinit {
-        // Remove property listeners using the stored block objects.
-        // AudioObjectRemovePropertyListenerBlock requires the exact same block
-        // pointer that was passed to AudioObjectAddPropertyListenerBlock.
+        // Unregister CoreAudio property listener blocks using stored block references
         if var addr = processListListenerAddress, let block = processListListenerBlock {
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
@@ -625,6 +750,8 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     // MARK: - Output Device Helpers
+
+    /// Queries the CoreAudio HAL for all available output devices, filtering out MySound virtual tap devices.
     func getAvailableOutputDevices() -> [AudioOutputDevice] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -671,7 +798,7 @@ class AudioTapManager: NSObject, ObservableObject {
                 continue
             }
 
-            // Filter out MySound tap aggregate devices
+            // Filter out MySound tap aggregate devices from the user-facing device list
             if deviceName.hasPrefix("MySound-Tap-") {
                 continue
             }
@@ -697,6 +824,7 @@ class AudioTapManager: NSObject, ObservableObject {
         return outputDevices
     }
 
+    /// Fetches the currently active default system audio output device.
     func getDefaultOutputDevice() -> AudioOutputDevice? {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -713,6 +841,7 @@ class AudioTapManager: NSObject, ObservableObject {
         return available.first(where: { $0.id == defaultOutputDeviceID })
     }
 
+    /// Switches the system-wide default output device to the specified hardware device.
     func setDefaultOutputDevice(_ device: AudioOutputDevice) {
         var devID = device.id
         let propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -724,22 +853,21 @@ class AudioTapManager: NSObject, ObservableObject {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID)
         if status == noErr {
             self.currentOutputDevice = device
-            // Note: Do NOT call refreshOutputDevices() here — the HAL listener for
-            // kAudioHardwarePropertyDefaultOutputDevice fires automatically and calls
-            // refreshOutputDevices(), which calls recreateAllTaps(). Calling it again
-            // here would cause double tap recreation.
         } else {
             print("MySound: Failed to set default output device \(device.name) (status: \(status))")
         }
     }
 
-    // MARK: - System Volume Helpers
+    // MARK: - System Master Volume Helpers
+
+    /// Adjusts the global macOS master output volume (0.0...1.0) and mute flag on the default output device.
     func setSystemVolume(_ volume: Float) {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
             var vol = volume
+            // Set volume on Main element, and channels 1 and 2
             for element in [kAudioObjectPropertyElementMain, 1, 2] {
                 var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
                 if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
@@ -747,6 +875,7 @@ class AudioTapManager: NSObject, ObservableObject {
                 }
             }
             
+            // Set hardware mute flag when volume drops to zero
             var isMuted: UInt32 = (volume <= 0.001) ? 1 : 0
             for element in [kAudioObjectPropertyElementMain, 1, 2] {
                 var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
@@ -757,11 +886,13 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
+    /// Reads the current global macOS master output volume (0.0...1.0).
     func getSystemVolume() -> Float {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
+            // Check mute property first
             for element in [kAudioObjectPropertyElementMain, UInt32(1), UInt32(2)] {
                 var isMuted: UInt32 = 0
                 var muteSize = UInt32(MemoryLayout<UInt32>.size)
@@ -773,6 +904,7 @@ class AudioTapManager: NSObject, ObservableObject {
                 }
             }
 
+            // Read scalar volume
             var vol: Float32 = 0
             var volSize = UInt32(MemoryLayout<Float32>.size)
             var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
@@ -785,6 +917,7 @@ class AudioTapManager: NSObject, ObservableObject {
         return 0.5
     }
 
+    /// Retrieves the string UID of the active default output device.
     private func getDefaultOutputDeviceUID() -> String? {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -801,6 +934,9 @@ class AudioTapManager: NSObject, ObservableObject {
         return nil
     }
 
+    // MARK: - Process Tree Helpers
+
+    /// Recursively lists all child process IDs spawned under a parent process.
     private func getChildPIDs(parentPID: pid_t) -> Set<pid_t> {
         var pids = Set<pid_t>()
         let bufferSize = proc_listchildpids(parentPID, nil, 0)
@@ -820,6 +956,14 @@ class AudioTapManager: NSObject, ObservableObject {
         return pids
     }
 
+    /// Finds all CoreAudio AudioObjectIDs associated with a target process.
+    ///
+    /// Matches against:
+    /// 1. Direct PID
+    /// 2. Responsible parent PID
+    /// 3. Child process tree
+    /// 4. App Bundle Identifier prefix matching
+    /// 5. Executable bundle directory containment
     private func getAudioObjectIDs(for targetPID: pid_t) -> [AudioObjectID] {
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -873,6 +1017,7 @@ class AudioTapManager: NSObject, ObservableObject {
         return matchingIDs
     }
 
+    /// Resolves the filesystem executable path for a given process ID using `proc_pidpath`.
     private nonisolated static func getPath(for pid: pid_t) -> String? {
         let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
         defer { pathBuffer.deallocate() }
@@ -883,12 +1028,13 @@ class AudioTapManager: NSObject, ObservableObject {
         return nil
     }
 
+    /// Inspects whether an AudioObjectID is actively outputting sound to hardware.
+    /// Uses CoreAudio FourCC selector `0x7069726f` ('piro' -> `kAudioProcessPropertyIsRunningOutput`).
     nonisolated static func isProcessRunningOutput(_ processID: AudioObjectID) -> Bool {
         var isRunning: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        // 'piro' = kAudioProcessPropertyIsRunningOutput
         var addr = AudioObjectPropertyAddress(
-            mSelector: AudioObjectPropertySelector(0x7069726f),
+            mSelector: AudioObjectPropertySelector(0x7069726f), // 'piro'
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -898,6 +1044,10 @@ class AudioTapManager: NSObject, ObservableObject {
         return false
     }
 
+    /// Discovers all process IDs that are currently playing sound.
+    ///
+    /// - Parameter onlyPlayingAudio: If true, filters for processes whose hardware output status or recent activity is active.
+    /// - Returns: Set of active process IDs (including mapped main application PIDs).
     nonisolated static func getAudioActivePIDs(onlyPlayingAudio: Bool = true) -> Set<pid_t> {
         var processListSize: UInt32 = 0
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -909,15 +1059,13 @@ class AudioTapManager: NSObject, ObservableObject {
         var activePIDs = Set<pid_t>()
         let runningApps = NSWorkspace.shared.runningApplications
 
-        // Pre-build a dictionary of bundlePath → app for O(1) lookups
-        // instead of O(n×m) linear scan inside the process loop.
+        // Pre-index running applications by bundle path for efficient longest-prefix matching
         var bundlePathIndex: [(path: String, app: NSRunningApplication)] = []
         for app in runningApps {
             if let bundlePath = app.bundleURL?.path {
                 bundlePathIndex.append((path: bundlePath, app: app))
             }
         }
-        // Sort by path length descending so longer (more specific) paths match first
         bundlePathIndex.sort { $0.path.count > $1.path.count }
 
         for processID in processIDs {
@@ -940,14 +1088,13 @@ class AudioTapManager: NSObject, ObservableObject {
                     activePIDs.insert(processPID)
 
                     if let procPath = getPath(for: processPID) {
-                        // Use pre-built index — find the first (longest) matching bundle path
                         for entry in bundlePathIndex {
                             if procPath.hasPrefix(entry.path) {
                                 if isHardwarePlaying {
                                     activityTracker.recordActivity(for: entry.app.processIdentifier)
                                 }
                                 activePIDs.insert(entry.app.processIdentifier)
-                                break // longest match found, stop searching
+                                break
                             }
                         }
                     }
@@ -957,3 +1104,4 @@ class AudioTapManager: NSObject, ObservableObject {
         return activePIDs
     }
 }
+

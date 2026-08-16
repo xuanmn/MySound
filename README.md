@@ -24,12 +24,13 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 ## ✨ Features
 
 - **Per-App Volume Control**: Fine-tune audio levels for individual running applications (Chrome, Spotify, Zoom, Games, etc.) independently.
-- **Output Device Switcher**: Easily toggle output devices (MacBook Air Speakers, Headphones, External Displays, Bluetooth) right from the header dropdown.
+- **Dynamic Hardware Device Icons**: Output switcher intelligently displays native SF Symbols matching your connected device (`laptopcomputer` for Mac speakers, `airpodspro`, `headphones`, `tv`, `display`, and `desktopcomputer`).
+- **Minimal Single-Line App Mixer**: Ultra-compact audio rows with high-res app icons, native name tooltips, responsive mute toggles, and smooth custom sliders.
 - **Master & Quick Mute Controls**: Adjust overall system volume with double-click reset to 100%, click-to-mute, or use **Mute All** to instantly silence all active apps while saving individual gain settings.
-- **Direct-Zero CoreAudio Architecture**: Low-latency CoreAudio process tap (`CATapDescription`) routing for crystal-clear sound synchronization.
+- **Direct-Zero CoreAudio Architecture**: Low-latency CoreAudio process tap (`CATapDescription`) routing with event-driven property listeners for zero-CPU idle operation.
 - **Smart App Detection**: Automatically detects active sound-producing applications and dynamically updates the control panel.
 - **Native macOS Interface**: Crafted with Swift and SwiftUI utilizing native glassmorphic popover translucency and smooth hover feedback.
-- **Keyboard Shortcuts & Quick Gestures**: Press `⌘Q` to quit, double-click master slider to reset to 100%.
+- **Keyboard Shortcuts & Quick Gestures**: Press `⌘Q` to quit, double-click any slider to reset to 100%.
 - **Launch at Login**: Automatic background startup via Apple's native `SMAppService` framework.
 - **Built-in Auto-Updater**: In-app version checks and automated background update downloads.
 - **Standalone DMG Installer**: Fast Universal Binary (`arm64` + `x86_64`) package for instant drag-and-drop installation into `/Applications`.
@@ -80,10 +81,11 @@ If installing on a different Mac without an official Apple Developer ID certific
 | Control / Action | Description |
 | :--- | :--- |
 | **Output Selector** | Click top-left dropdown (e.g. *MacBook Air Speakers*) to switch active audio output device. |
+| **Hardware Icon** | Dynamic indicator displaying device type (`laptopcomputer`, `airpodspro`, `headphones`, `tv`, `desktopcomputer`). |
 | **Mute All / Unmute All** | Header button to instantly mute or restore volume across all active applications. |
-| **Master Volume Slider** | Drag slider or click volume icon to mute/unmute global system audio. |
-| **Double-Click Master Slider** | Resets master system volume directly to 100%. |
-| **Per-App Sliders** | Individual application volume sliders (0% to 100%). |
+| **Master Volume Row** | Drag master slider or click speaker icon to mute/unmute global system audio. |
+| **Double-Click Slider** | Instantly resets master or app volume directly to 100%. |
+| **Per-App Mixer Rows** | Single-line compact controls with application icon tooltip, dedicated mute toggle, custom slider, and percentage readout. |
 | `⌘Q` | Keyboard shortcut to immediately quit MySound when window is focused. |
 | **Gear Menu (⚙️)** | Toggle **Launch at Login** or manually trigger **Check for Updates...**. |
 

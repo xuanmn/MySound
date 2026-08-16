@@ -1,5 +1,6 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.3.0 - Resolved per-app CoreAudio process tap race conditions for Intel & Apple Silicon Macs, added multi-condition PID resolution, and built-in permission guidance onboarding."
+  "releaseNotes": "v1.4.0 - Ultra-compact single-line application mixer, seamless circular 3D spectrum ribbon app icon, and dynamic hardware output device SF Symbols (MacBook, AirPods, headphones, displays, TVs)."
 }
+

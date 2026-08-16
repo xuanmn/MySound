@@ -322,15 +322,17 @@ struct VolumeControlView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
                     }
-                    
-                    // Device type SF Symbol (AirPods, Headphones, TV, Speaker)
-                    Image(systemName: deviceIconName(for: tapManager.currentOutputDevice?.name))
-                        .foregroundColor(.secondary)
                 }
 
-                // Master Volume Slider Row
-                HStack(spacing: 8) {
-                    // Master Mute Button
+                // Master Volume Slider Row: [Device Icon] [Speaker Mute Button] [Slider] [Percentage]
+                HStack(spacing: 6) {
+                    // Device Icon
+                    Image(systemName: deviceIconName(for: tapManager.currentOutputDevice?.name))
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                        .frame(width: 18, height: 18)
+
+                    // Master Speaker Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {
                             masterVolume = 0
@@ -341,8 +343,8 @@ struct VolumeControlView: View {
                     }) {
                         Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.3.fill")
                             .foregroundColor(masterVolume <= 0.001 ? .red : .secondary)
-                            .font(.system(size: 12))
-                            .frame(width: 20, height: 20)
+                            .font(.system(size: 11))
+                            .frame(width: 18, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -378,12 +380,12 @@ struct VolumeControlView: View {
                     // Percentage readout
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption.monospacedDigit())
-                        .foregroundColor(.secondary)
-                        .frame(width: 40, alignment: .trailing)
+                        .foregroundColor(masterVolume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
+                        .frame(width: 36, alignment: .trailing)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
@@ -484,15 +486,15 @@ struct VolumeControlView: View {
                     .transition(.opacity)
                 } else {
                     // List of apps currently producing sound
-                    VStack(spacing: 8) {
+                    VStack(spacing: 4) {
                         ForEach($appManager.apps) { $app in
                             AppVolumeRow(app: $app) { newVolume in
                                 tapManager.setVolume(for: app.pid, volume: newVolume)
                             }
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 6)
                     .transition(.opacity)
                 }
             }
@@ -634,15 +636,22 @@ struct VolumeControlView: View {
 
     /// Resolves an appropriate SF Symbol icon name based on the audio device name.
     private func deviceIconName(for name: String?) -> String {
-        guard let name = name?.lowercased() else { return "speaker.wave.2.fill" }
+        guard let name = name?.lowercased() else { return "laptopcomputer" }
         if name.contains("airpod") {
             return "airpodspro"
-        } else if name.contains("headphone") || name.contains("headset") {
+        } else if name.contains("headphone") || name.contains("headset") || name.contains("earphone") {
             return "headphones"
-        } else if name.contains("hdmi") || name.contains("tv") || name.contains("displayport") {
+        } else if name.contains("hdmi") || name.contains("tv") || name.contains("displayport") || name.contains("monitor") {
             return "tv"
+        } else if name.contains("homepod") {
+            return "homepod.fill"
+        } else if name.contains("studio") || name.contains("pro display") {
+            return "display"
+        } else if name.contains("imac") || name.contains("mac pro") || name.contains("mac mini") || name.contains("desktop") {
+            return "desktopcomputer"
         } else {
-            return "speaker.wave.2.fill"
+            // Default built-in / MacBook Air / MacBook Pro speakers
+            return "laptopcomputer"
         }
     }
 
@@ -747,8 +756,8 @@ struct VolumeControlView: View {
 // MARK: - App Volume Row
 // =============================================================================
 
-/// `AppVolumeRow` renders a single application row with its icon, name, audio waveform badge,
-/// mute button, and volume slider.
+/// `AppVolumeRow` renders a minimal single-line application row with its icon on the side,
+/// custom slider in the center, and percentage readout on the right.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
@@ -756,92 +765,71 @@ struct AppVolumeRow: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        VStack(spacing: 4) {
-            // Row Top: Icon, App Name, Waveform badge, Percentage
-            HStack {
-                // Application Icon
-                Image(nsImage: app.icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 20, height: 20)
-                    .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
+        HStack(spacing: 6) {
+            // Application Icon with Native Tooltip
+            Image(nsImage: app.icon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 18, height: 18)
+                .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
+                .help(app.name)
 
-                HStack(spacing: 4) {
-                    Text(app.name)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(app.volume <= 0.001 ? .secondary : .primary)
+            // Per-app Speaker Mute Button
+            Button(action: {
+                if app.volume > 0.001 {
+                    previousVolume = app.volume
+                    app.volume = 0
+                } else {
+                    app.volume = previousVolume > 0.001 ? previousVolume : 0.5
+                }
+                onVolumeChange(Float(app.volume))
+            }) {
+                Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .foregroundColor(app.volume <= 0.001 ? .red : .secondary)
+                    .font(.system(size: 11))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
-                    // Audio activity waveform indicator
-                    if app.volume > 0.001 {
-                        Image(systemName: "waveform")
-                            .font(.caption2)
-                            .foregroundColor(.blue.opacity(0.8))
-                            .accessibilityLabel("Playing audio")
+            // Custom Application Volume Slider
+            BoxySlider(value: $app.volume, range: 0...1, tint: app.volume <= 0.001 ? .gray.opacity(0.4) : .blue)
+                .accessibilityLabel("\(app.name) volume")
+                .accessibilityValue("\(Int(app.volume * 100)) percent")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment:
+                        app.volume = min(app.volume + 0.05, 1.0)
+                    case .decrement:
+                        app.volume = max(app.volume - 0.05, 0.0)
+                    @unknown default:
+                        break
                     }
                 }
-
-                Spacer()
-
-                // Percentage readout
-                Text("\(Int(app.volume * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundColor(.secondary)
-                    .frame(width: 36, alignment: .trailing)
-            }
-
-            // Row Bottom: Mute Button & Custom Slider
-            HStack(spacing: 8) {
-                // Per-app Mute Button
-                Button(action: {
-                    if app.volume > 0.001 {
-                        previousVolume = app.volume
-                        app.volume = 0
-                    } else {
-                        app.volume = previousVolume > 0.001 ? previousVolume : 0.5
+                .onChange(of: app.volume) { _, newValue in
+                    if newValue > 0.001 {
+                        previousVolume = newValue
                     }
-                    onVolumeChange(Float(app.volume))
-                }) {
-                    Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .foregroundColor(app.volume <= 0.001 ? .red : .secondary)
-                        .font(.system(size: 11))
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
+                    onVolumeChange(Float(newValue))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
+                // Double-click to set application volume to 100%
+                .onTapGesture(count: 2) {
+                    app.volume = 1.0
+                    onVolumeChange(1.0)
+                }
 
-                // Custom App Volume Slider
-                BoxySlider(value: $app.volume, range: 0...1, tint: app.volume <= 0.001 ? .gray.opacity(0.4) : .blue)
-                    .accessibilityLabel("\(app.name) volume")
-                    .accessibilityValue("\(Int(app.volume * 100)) percent")
-                    .accessibilityAdjustableAction { direction in
-                        switch direction {
-                        case .increment:
-                            app.volume = min(app.volume + 0.05, 1.0)
-                        case .decrement:
-                            app.volume = max(app.volume - 0.05, 0.0)
-                        @unknown default:
-                            break
-                        }
-                    }
-                    .onChange(of: app.volume) { _, newValue in
-                        if newValue > 0.001 {
-                            previousVolume = newValue
-                        }
-                        onVolumeChange(Float(newValue))
-                    }
-                    // Double-click to set application volume to 100%
-                    .onTapGesture(count: 2) {
-                        app.volume = 1.0
-                        onVolumeChange(1.0)
-                    }
-            }
+            // Percentage readout
+            Text("\(Int(app.volume * 100))%")
+                .font(.caption.monospacedDigit())
+                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
+                .frame(width: 36, alignment: .trailing)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
         .cornerRadius(6)
+        .help(app.name)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) {
                 isHovered = hovering

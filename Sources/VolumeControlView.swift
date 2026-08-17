@@ -565,7 +565,7 @@ struct VolumeControlView: View {
                 Spacer()
 
                 // Version Badge
-                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.0")")
+                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0")")
                     .font(.caption2)
                     .foregroundColor(.secondary.opacity(0.5))
 

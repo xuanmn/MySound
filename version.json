@@ -1,5 +1,5 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.4.0 - Ultra-compact single-line application mixer, seamless circular 3D spectrum ribbon app icon, and dynamic hardware output device SF Symbols (MacBook, AirPods, headphones, displays, TVs)."
+  "releaseNotes": "v1.5.0 - Automated CI/CD release packaging, Swift strict concurrency support, real-time volume listener re-registration on audio device switches, bounded log rotation, hardened installer and update pipelines."
 }

@@ -17,11 +17,17 @@ if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${RESOURCES_DIR}/"
 fi
 
+SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)
+SDK_FLAGS=()
+if [ -n "$SDK_PATH" ]; then
+    SDK_FLAGS=(-sdk "$SDK_PATH")
+fi
+
 echo "Compiling Swift files (Universal Binary arm64 + x86_64)..."
-swiftc -o "${MACOS_DIR}/${APP_NAME}_arm64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
+swiftc "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_arm64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
 ARM64_STATUS=$?
 
-swiftc -o "${MACOS_DIR}/${APP_NAME}_x86_64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target x86_64-apple-macos14.2
+swiftc "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_x86_64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target x86_64-apple-macos14.2
 X86_STATUS=$?
 
 if [ $ARM64_STATUS -eq 0 ] && [ $X86_STATUS -eq 0 ]; then

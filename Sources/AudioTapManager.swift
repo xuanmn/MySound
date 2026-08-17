@@ -283,7 +283,7 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Periodically cleans up taps for applications that have exited or stopped playing audio.
     private func setupCleanupTimer() {
         cleanupTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.cleanupInactiveTaps()
             }
         }
@@ -349,7 +349,7 @@ class AudioTapManager: NSObject, ObservableObject {
         )
         // Store block reference so deinit can unregister the exact same pointer
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.refreshActiveTaps()
             }
         }
@@ -367,7 +367,7 @@ class AudioTapManager: NSObject, ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         let outputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.refreshOutputDevices()
             }
         }
@@ -382,7 +382,7 @@ class AudioTapManager: NSObject, ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         let devicesBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.refreshOutputDevices()
             }
         }

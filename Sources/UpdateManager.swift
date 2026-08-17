@@ -218,7 +218,7 @@ class UpdateManager: ObservableObject {
             do {
                 // Step 1: Stream download using URLSessionDownloadDelegate to track progress smoothly
                 let delegate = DownloadProgressDelegate { [weak self] progress in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         self?.downloadProgress = progress
                         self?.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
                     }

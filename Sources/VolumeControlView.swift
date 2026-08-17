@@ -71,7 +71,7 @@ class AppManager: ObservableObject {
         
         // Periodically refresh (every 1.5 seconds) to catch audio playback start/stop events.
         self.timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.updateApps()
             }
         }

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 APP_NAME="MySound"
 BUNDLE_ID="com.xuanmn.mysound"
 BUILD_DIR="build"

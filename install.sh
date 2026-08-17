@@ -25,7 +25,7 @@ if [ -z "$DOWNLOAD_URL" ]; then
     DOWNLOAD_URL="https://raw.githubusercontent.com/${REPO}/main/build/${APP_NAME}.dmg"
 fi
 
-curl -cL "$DOWNLOAD_URL" -o "$DMG_PATH" || {
+curl -fSL "$DOWNLOAD_URL" -o "$DMG_PATH" || {
     echo "❌ Download failed. Please download MySound manually from GitHub Releases."
     exit 1
 }

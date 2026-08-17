@@ -302,15 +302,17 @@ class UpdateManager: ObservableObject {
                 // - Deletes existing bundle and moves new bundle into place.
                 // - Launches updated app using `open`.
                 // - Cleans up temporary extraction files.
+                // Shell-escape paths to handle directories with spaces or special characters.
+                func shellEscape(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
                 let relaunchScript = """
                 while kill -0 \(pid) 2>/dev/null; do
                     sleep 0.2
                 done
-                rm -rf "\(currentAppPath)"
-                mv "\(newAppPath)" "\(currentAppPath)"
-                open "\(currentAppPath)"
-                rm -rf "\(tempExtractDir.path)"
-                rm -f "\(tempZipURL.path)"
+                rm -rf \(shellEscape(currentAppPath))
+                mv \(shellEscape(newAppPath)) \(shellEscape(currentAppPath))
+                open \(shellEscape(currentAppPath))
+                rm -rf \(shellEscape(tempExtractDir.path))
+                rm -f \(shellEscape(tempZipURL.path))
                 """
                 
                 let process = Process()

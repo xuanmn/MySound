@@ -80,6 +80,8 @@ class AppManager: ObservableObject {
     deinit {
         // Invalidate timer to prevent execution after deallocation
         timer?.invalidate()
+        // Remove NSWorkspace notification observers
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     // Debounce work item to prevent overlapping background queries
@@ -608,6 +610,11 @@ struct VolumeControlView: View {
                     masterVolume = volume
                 }
             }
+        }
+        // Re-register volume listeners when the default output device changes
+        .onChange(of: tapManager.currentOutputDevice?.id) { _, _ in
+            setupVolumeListeners()
+            masterVolume = Double(tapManager.getSystemVolume())
         }
     }
 

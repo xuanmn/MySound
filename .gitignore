@@ -2,3 +2,9 @@ build/
 .DS_Store
 *.dmg
 *.zip
+*.log
+log.txt
+debug.log
+*.dSYM/
+DerivedData/
+.build/

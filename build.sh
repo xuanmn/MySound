@@ -1,4 +1,6 @@
 #!/bin/bash
+set -eo pipefail
+
 APP_NAME="MySound"
 BUNDLE_ID="com.xuanmn.mysound"
 BUILD_DIR="build"
@@ -47,9 +49,9 @@ fi
 
 echo "Creating Info.plist..."
 
-# Fix 13: Read version dynamically from version.json instead of hardcoding "1.0.0"
+# Read version dynamically from version.json using sed (no python3 dependency)
 if [ -f "version.json" ]; then
-    APP_VERSION=$(python3 -c "import json,sys; print(json.load(open('version.json'))['version'])" 2>/dev/null || echo "1.0.0")
+    APP_VERSION=$(grep '"version"' version.json | head -1 | sed 's/.*: *"\(.*\)".*/\1/' 2>/dev/null || echo "1.0.0")
 else
     APP_VERSION="1.0.0"
 fi
@@ -71,6 +73,8 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
+    <string>${APP_VERSION}</string>
+    <key>CFBundleVersion</key>
     <string>${APP_VERSION}</string>
     <key>LSUIElement</key>
     <true/>

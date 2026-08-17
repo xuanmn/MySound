@@ -69,6 +69,11 @@ final class AppLogger: @unchecked Sendable {
         let logLine = "[\(timestamp)] \(message)\n"
         NSLog("MySound: %@", message)
         guard let url = logFileURL else { return }
+        // Rotate log file if it exceeds 5MB to prevent unbounded growth
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? UInt64, size > 5_000_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
         if let data = logLine.data(using: .utf8) {
             if let handle = try? FileHandle(forWritingTo: url) {
                 handle.seekToEndOfFile()
@@ -722,6 +727,7 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     deinit {
+        cleanupTimer?.invalidate()
         // Unregister CoreAudio property listener blocks using stored block references
         if var addr = processListListenerAddress, let block = processListListenerBlock {
             AudioObjectRemovePropertyListenerBlock(

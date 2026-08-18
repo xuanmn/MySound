@@ -1,0 +1,90 @@
+# Configuration for GitHub's automatically generated release notes
+# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+
+changelog:
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "🎨 UI & User Experience"
+      labels:
+        - "ui"
+        - "ux"
+        - "design"
+    - title: "⚡ Audio Engine & Performance"
+      labels:
+        - "performance"
+        - "perf"
+        - "audio"
+        - "coreaudio"
+    - title: "🐛 Bug Fixes & Stability"
+      labels:
+        - "bug"
+        - "fix"
+        - "bugfix"
+    - title: "📦 Build, Packaging & Distribution"
+      labels:
+        - "build"
+        - "ci"
+        - "release"
+        - "packaging"
+    - title: "🛠 Maintenance & Refactoring"
+      labels:
+        - "refactor"
+        - "chore"
+        - "docs"
+        - "maintenance"
+    - title: "Other Changes"
+      labels:
+        - "*"
+  exclude:
+    labels:
+      - "ignore-for-release"
+      - "dependencies"
+      - "no-release"
+      - "bump"
+      - "skip-changelog"
+
+autolabeler:
+  - label: "feature"
+    title:
+      - "/^feat(\\(.*\\))?:/i"
+      - "/^feature(\\(.*\\))?:/i"
+      - "/^add(\\(.*\\))?:/i"
+    branch:
+      - "feat/*"
+      - "feature/*"
+  - label: "bug"
+    title:
+      - "/^fix(\\(.*\\))?:/i"
+      - "/^bugfix(\\(.*\\))?:/i"
+      - "/^patch(\\(.*\\))?:/i"
+    branch:
+      - "fix/*"
+      - "bugfix/*"
+      - "patch/*"
+  - label: "ui"
+    title:
+      - "/^ui(\\(.*\\))?:/i"
+      - "/^ux(\\(.*\\))?:/i"
+      - "/^style(\\(.*\\))?:/i"
+  - label: "performance"
+    title:
+      - "/^perf(\\(.*\\))?:/i"
+      - "/^audio(\\(.*\\))?:/i"
+      - "/^tap(\\(.*\\))?:/i"
+      - "/^vdsp(\\(.*\\))?:/i"
+  - label: "build"
+    title:
+      - "/^build(\\(.*\\))?:/i"
+      - "/^ci(\\(.*\\))?:/i"
+      - "/^release(\\(.*\\))?:/i"
+      - "/^dmg(\\(.*\\))?:/i"
+  - label: "refactor"
+    title:
+      - "/^refactor(\\(.*\\))?:/i"
+      - "/^chore(\\(.*\\))?:/i"
+      - "/^docs(\\(.*\\))?:/i"
+      - "/^test(\\(.*\\))?:/i"

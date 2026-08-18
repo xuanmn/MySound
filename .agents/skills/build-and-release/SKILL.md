@@ -9,15 +9,24 @@ This skill guides the automated compilation, code-signing, packaging, and versio
 
 ## Workflow
 
-### 1. Update Version Information
+### 1. Update Version Information & Commit Conventions
 If cutting a new release, bump the version string and release notes in [version.json](file:///Users/xuanmn/Developer/MySound/version.json):
 ```json
 {
-  "version": "1.3.1",
+  "version": "1.5.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
   "releaseNotes": "Summary of changes..."
 }
 ```
+
+When authoring commits and pull requests, use standard prefixes so GitHub's release notes engine ([.github/release.yml](file:///Users/xuanmn/Developer/MySound/.github/release.yml)) automatically groups them into feature categories:
+- `feat:` or `feature:` → **🚀 New Features**
+- `ui:` or `ux:` → **🎨 UI & User Experience**
+- `perf:` or `audio:` → **⚡ Audio Engine & Performance**
+- `fix:` or `bugfix:` → **🐛 Bug Fixes & Stability**
+- `build:` or `ci:` → **📦 Build, Packaging & Distribution**
+- `refactor:` or `chore:` → **🛠 Maintenance & Refactoring**
+
 
 ### 2. Compile Universal Binary and Package
 Run the build script to compile `arm64` and `x86_64` targets, bundle the app, sign with entitlements, and produce DMG and ZIP installers:

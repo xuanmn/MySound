@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eo pipefail
+set -euo pipefail
 
 APP_NAME="MySound"
 BUNDLE_ID="com.xuanmn.mysound"
@@ -25,10 +25,10 @@ if [ -n "$SDK_PATH" ]; then
 fi
 
 echo "Compiling Swift files (Universal Binary arm64 + x86_64)..."
-swiftc "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_arm64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
+swiftc -O "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_arm64" Sources/App.swift Sources/AppLogger.swift Sources/VolumeStore.swift Sources/AudioOutputDevice.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target arm64-apple-macos14.2
 ARM64_STATUS=$?
 
-swiftc "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_x86_64" Sources/App.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target x86_64-apple-macos14.2
+swiftc -O "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}_x86_64" Sources/App.swift Sources/AppLogger.swift Sources/VolumeStore.swift Sources/AudioOutputDevice.swift Sources/VolumeControlView.swift Sources/AudioTapManager.swift Sources/UpdateManager.swift -target x86_64-apple-macos14.2
 X86_STATUS=$?
 
 if [ $ARM64_STATUS -eq 0 ] && [ $X86_STATUS -eq 0 ]; then
@@ -84,6 +84,8 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <string>MySound needs access to audio to mix your application volumes.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>MySound needs access to system audio to capture per-app sounds.</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
 </dict>
 </plist>
 EOF

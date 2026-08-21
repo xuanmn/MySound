@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MySound 1-Line Installer Script for macOS
-set -e
+set -eu
 
 echo "================================================="
 echo "🔊  MySound One-Line Installer"

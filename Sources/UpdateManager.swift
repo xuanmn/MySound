@@ -215,16 +215,17 @@ class UpdateManager: ObservableObject {
         updateStatus = "Downloading update..."
 
         Task {
+            // Create the download session outside the do block so it can be invalidated in all paths
+            let delegate = DownloadProgressDelegate { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.downloadProgress = progress
+                    self?.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
+                }
+            }
+            let downloadSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            
             do {
                 // Step 1: Stream download using URLSessionDownloadDelegate to track progress smoothly
-                let delegate = DownloadProgressDelegate { [weak self] progress in
-                    Task { @MainActor [weak self] in
-                        self?.downloadProgress = progress
-                        self?.updateStatus = "Downloading update (\(Int(progress * 100))%)..."
-                    }
-                }
-                let downloadSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-                
                 var (tempFileURL, response) = try await downloadSession.download(from: zipURL)
                 
                 // If GitHub release zip URL returns 404, fallback to repository raw build zip
@@ -244,6 +245,9 @@ class UpdateManager: ObservableObject {
                     try? FileManager.default.removeItem(at: tempZipURL)
                 }
                 try FileManager.default.moveItem(at: tempFileURL, to: tempZipURL)
+                
+                // Invalidate the download session to break the delegate retain cycle
+                downloadSession.invalidateAndCancel()
                 
                 await MainActor.run {
                     self.downloadProgress = 1.0
@@ -326,6 +330,8 @@ class UpdateManager: ObservableObject {
                 }
                 
             } catch {
+                // Invalidate the download session to break the delegate retain cycle
+                downloadSession.invalidateAndCancel()
                 // If automatic update fails, alert user and offer browser download fallback
                 await MainActor.run {
                     self.isDownloading = false

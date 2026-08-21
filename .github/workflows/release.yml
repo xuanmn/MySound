@@ -15,6 +15,15 @@ jobs:
     runs-on: macos-14
 
     steps:
+      - name: Select Xcode
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE_PATH" ]; then
+            sudo xcode-select -s "$XCODE_PATH"
+            echo "Selected: $XCODE_PATH"
+          fi
+          xcodebuild -version
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:

@@ -1,4 +1,26 @@
 import SwiftUI
+import AppKit
+
+// =============================================================================
+// MARK: - Application Delegate
+// =============================================================================
+
+/// `MySoundAppDelegate` handles macOS application lifecycle events that SwiftUI does not expose,
+/// ensuring clean teardown of CoreAudio resources (aggregate devices, process taps) when the
+/// app is terminated by the system (e.g. logout, shutdown, force quit).
+class MySoundAppDelegate: NSObject, NSApplicationDelegate {
+    /// Called by macOS when the application is about to terminate (user quit, system shutdown, etc.).
+    /// Ensures all CoreAudio process taps and aggregate devices are destroyed cleanly.
+    func applicationWillTerminate(_ notification: Notification) {
+        Task { @MainActor in
+            AudioTapManager.shared.removeAllTaps()
+        }
+    }
+}
+
+// =============================================================================
+// MARK: - App Entry Point
+// =============================================================================
 
 /// `MySoundApp` is the main entry point for the MySound macOS menu bar utility.
 ///
@@ -8,6 +30,9 @@ import SwiftUI
 /// - The UI is rendered as a popover window attached to the macOS system menu bar using SwiftUI's `MenuBarExtra`.
 @main
 struct MySoundApp: App {
+    
+    /// Bridges AppKit lifecycle events (e.g. applicationWillTerminate) into the SwiftUI app.
+    @NSApplicationDelegateAdaptor(MySoundAppDelegate.self) var appDelegate
     
     /// Initializes core managers upon startup.
     init() {
@@ -42,5 +67,3 @@ struct MySoundApp: App {
         .menuBarExtraStyle(.window)
     }
 }
-
-

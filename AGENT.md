@@ -64,8 +64,11 @@ MySound/
 ├── install.sh               # 1-line curl/bash installer for end-users
 ├── Resources/               # Application icons (.icns, .png) and assets
 └── Sources/
-    ├── App.swift            # Main entry point (@main MySoundApp); menu bar extra popover setup
-    ├── AudioTapManager.swift# CoreAudio engine: private SPI process taps, vDSP scaling, device routing, VolumeStore, AppLogger
+    ├── App.swift            # Main entry point (@main MySoundApp); menu bar extra popover setup & NSApplicationDelegateAdaptor for clean shutdown
+    ├── AppLogger.swift      # Lightweight file logger to ~/Library/Logs/MySound.log with rotation
+    ├── AudioOutputDevice.swift # Hardware audio output device model (AudioDeviceID, name, UID)
+    ├── AudioTapManager.swift# CoreAudio engine: private SPI process taps, vDSP scaling, device routing
+    ├── VolumeStore.swift    # Thread-safe lock-protected volume store & audio activity tracker
     ├── VolumeControlView.swift # SwiftUI UI: AppManager (active audio polling), master & per-app sliders, output picker
     └── UpdateManager.swift  # Auto-updater: GitHub Releases API & version.json fetching, background DMG/ZIP extraction & relaunch
 ```

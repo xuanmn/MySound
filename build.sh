@@ -123,7 +123,7 @@ if [ "$SIGNING_IDENTITY" != "-" ]; then
     codesign --force --sign "${SIGNING_IDENTITY}" "${BUILD_DIR}/${APP_NAME}.dmg"
 fi
 
-if [ -n "$NOTARIZE_PROFILE" ]; then
+if [ -n "${NOTARIZE_PROFILE:-}" ]; then
     echo "Submitting DMG for Apple Notarization using profile: ${NOTARIZE_PROFILE}..."
     xcrun notarytool submit "${BUILD_DIR}/${APP_NAME}.dmg" --keychain-profile "${NOTARIZE_PROFILE}" --wait
     echo "Stapling notarization ticket to DMG..."

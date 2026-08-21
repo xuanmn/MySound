@@ -117,21 +117,23 @@ class AppManager: ObservableObject {
     // -------------------------------------------------------------------------
     // MARK: - Icon Cache
     // Reading .icns files from disk on every poll cycle is expensive.
-    // We cache NSImages by bundleIdentifier for fast memory lookup.
+    // We cache NSImages by bundleIdentifier for fast memory lookup using NSCache.
     // -------------------------------------------------------------------------
-    nonisolated(unsafe) static var iconCache: [String: NSImage] = [:]
-    private nonisolated static let iconCacheLock = NSLock()
+    private nonisolated(unsafe) static let iconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 100
+        return cache
+    }()
 
     /// Retrieves an application's icon from memory cache or loads it from the application bundle.
     nonisolated private static func cachedIcon(for app: NSRunningApplication) -> NSImage? {
         guard let bundleID = app.bundleIdentifier else { return app.icon }
-        iconCacheLock.lock()
-        defer { iconCacheLock.unlock() }
-        if let cached = iconCache[bundleID] {
+        let key = bundleID as NSString
+        if let cached = iconCache.object(forKey: key) {
             return cached
         }
         guard let icon = app.icon else { return nil }
-        iconCache[bundleID] = icon
+        iconCache.setObject(icon, forKey: key)
         return icon
     }
 

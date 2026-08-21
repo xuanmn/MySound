@@ -806,24 +806,32 @@ class AudioTapManager: NSObject, ObservableObject {
 
     // MARK: - Process Tree Helpers
 
-    /// Recursively lists all child process IDs spawned under a parent process.
-    private func getChildPIDs(parentPID: pid_t) -> Set<pid_t> {
-        var pids = Set<pid_t>()
-        let bufferSize = proc_listchildpids(parentPID, nil, 0)
-        if bufferSize > 0 {
+    /// Iteratively lists all child process IDs spawned under a parent process (up to maxDepth levels).
+    private func getChildPIDs(parentPID: pid_t, maxDepth: Int = 8) -> Set<pid_t> {
+        var allPIDs = Set<pid_t>()
+        var queue: [(pid: pid_t, depth: Int)] = [(parentPID, 0)]
+        var visited: Set<pid_t> = [parentPID]
+
+        while !queue.isEmpty {
+            let (currentPID, depth) = queue.removeFirst()
+            if depth >= maxDepth { continue }
+
+            let bufferSize = proc_listchildpids(currentPID, nil, 0)
+            guard bufferSize > 0 else { continue }
             let count = Int(bufferSize) / MemoryLayout<pid_t>.size
             var childPIDs = [pid_t](repeating: 0, count: count)
-            let actualSize = proc_listchildpids(parentPID, &childPIDs, bufferSize)
-            if actualSize > 0 {
-                let actualCount = Int(actualSize) / MemoryLayout<pid_t>.size
-                for i in 0..<actualCount {
-                    let child = childPIDs[i]
-                    pids.insert(child)
-                    pids.formUnion(getChildPIDs(parentPID: child))
+            let actualSize = proc_listchildpids(currentPID, &childPIDs, bufferSize)
+            guard actualSize > 0 else { continue }
+            let actualCount = Int(actualSize) / MemoryLayout<pid_t>.size
+            for i in 0..<actualCount {
+                let child = childPIDs[i]
+                if visited.insert(child).inserted {
+                    allPIDs.insert(child)
+                    queue.append((child, depth + 1))
                 }
             }
         }
-        return pids
+        return allPIDs
     }
 
     /// Finds all CoreAudio AudioObjectIDs associated with a target process.

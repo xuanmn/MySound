@@ -190,6 +190,9 @@ struct VolumeControlView: View {
     // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
     @State private var muteListenerBlock: AudioObjectPropertyListenerBlock?
+    /// Tracks the device ID on which volume/mute listeners were registered,
+    /// so removal targets the correct device even after an output switch.
+    @State private var listenedDeviceID: AudioDeviceID = 0
 
     @EnvironmentObject private var appManager: AppManager
     @EnvironmentObject private var tapManager: AudioTapManager
@@ -667,7 +670,7 @@ struct VolumeControlView: View {
 
     /// Registers CoreAudio HAL property listeners on the default output device for volume and mute state.
     private func setupVolumeListeners() {
-        removeVolumeListeners() // Clean up any stale listeners
+        removeVolumeListeners() // Clean up any stale listeners on the previously tracked device
 
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -680,6 +683,9 @@ struct VolumeControlView: View {
             AudioObjectID(kAudioObjectSystemObject),
             &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
         ) == noErr else { return }
+
+        // Store the device ID so removeVolumeListeners() targets the correct device
+        listenedDeviceID = defaultOutputDeviceID
 
         // Volume property listener
         var volAddr = AudioObjectPropertyAddress(
@@ -720,19 +726,10 @@ struct VolumeControlView: View {
         muteListenerBlock = muteBlock
     }
 
-    /// Unregisters CoreAudio volume and mute property listeners.
+    /// Unregisters CoreAudio volume and mute property listeners from the device they were registered on.
     private func removeVolumeListeners() {
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var deviceAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
-        ) == noErr else { return }
+        let deviceID = listenedDeviceID
+        guard deviceID != 0 else { return }
 
         if let block = volumeListenerBlock {
             var volAddr = AudioObjectPropertyAddress(
@@ -740,9 +737,9 @@ struct VolumeControlView: View {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
-            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+            AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
             volAddr.mElement = 1
-            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+            AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
             volumeListenerBlock = nil
         }
         if let block = muteListenerBlock {
@@ -751,11 +748,12 @@ struct VolumeControlView: View {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
-            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+            AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
             muteAddr.mElement = 1
-            AudioObjectRemovePropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+            AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
             muteListenerBlock = nil
         }
+        listenedDeviceID = 0
     }
 }
 

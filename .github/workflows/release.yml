@@ -40,12 +40,6 @@ jobs:
       - name: Build and Package MySound
         run: ./build.sh
 
-      - name: Generate SHA-256 Checksums
-        run: |
-          cd build
-          shasum -a 256 MySound.dmg MySound.zip > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
       - name: Resolve Release Tag & Notes
         id: release_info
         run: |
@@ -68,4 +62,3 @@ jobs:
           files: |
             build/MySound.dmg
             build/MySound.zip
-            build/SHA256SUMS.txt

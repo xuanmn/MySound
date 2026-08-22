@@ -6,12 +6,23 @@ on:
   pull_request:
     branches: [ main ]
 
+# Cancel in-progress runs for the same branch/PR to save macOS runner minutes
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & Verify Universal Binary
     runs-on: macos-14
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Select Xcode
         run: |
           XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
@@ -20,9 +31,6 @@ jobs:
             echo "Selected: $XCODE_PATH"
           fi
           xcodebuild -version
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
       - name: Make build script executable
         run: chmod +x build.sh
@@ -39,3 +47,12 @@ jobs:
           lipo -info build/MySound.app/Contents/MacOS/MySound
           echo "Entitlements check:"
           codesign -d --entitlements :- build/MySound.app
+
+      - name: Upload Build Artifacts (Testing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MySound-CI-Build-${{ github.sha }}
+          path: |
+            build/MySound.dmg
+            build/MySound.zip
+          retention-days: 7

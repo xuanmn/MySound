@@ -119,8 +119,8 @@ class AppManager: ObservableObject {
     // Reading .icns files from disk on every poll cycle is expensive.
     // We cache NSImages by bundleIdentifier for fast memory lookup using NSCache.
     // -------------------------------------------------------------------------
-    private nonisolated(unsafe) static let iconCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
+    private nonisolated static let iconCache: SendableCache<NSString, NSImage> = {
+        let cache = SendableCache<NSString, NSImage>()
         cache.countLimit = 100
         return cache
     }()
@@ -569,10 +569,12 @@ struct VolumeControlView: View {
 
                 Spacer()
 
-                // Version Badge
-                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0")")
-                    .font(.caption2)
-                    .foregroundColor(.secondary.opacity(0.5))
+                // Version Badge (reads dynamically from Info.plist stamped from version.json)
+                if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !version.isEmpty {
+                    Text("v\(version)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
 
                 // Settings Gear Menu
                 Menu {
@@ -739,9 +741,12 @@ struct VolumeControlView: View {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
+            // Remove from Main element; if the device exposes channel 1 instead, remove there too
             AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
             volAddr.mElement = 1
-            AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
+            if AudioObjectHasProperty(deviceID, &volAddr) {
+                AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
+            }
             volumeListenerBlock = nil
         }
         if let block = muteListenerBlock {
@@ -752,7 +757,9 @@ struct VolumeControlView: View {
             )
             AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
             muteAddr.mElement = 1
-            AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
+            if AudioObjectHasProperty(deviceID, &muteAddr) {
+                AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
+            }
             muteListenerBlock = nil
         }
         listenedDeviceID = 0
@@ -953,3 +960,26 @@ struct VisualEffectView: NSViewRepresentable {
     }
 }
 
+// =============================================================================
+// MARK: - Thread-Safe Sendable Cache Wrapper
+// =============================================================================
+
+/// `SendableCache` wraps `NSCache` to satisfy `Sendable` in Swift 6 strict concurrency mode.
+/// `NSCache` is internally thread-safe (documented by Apple), so `@unchecked Sendable` is correct.
+final class SendableCache<KeyType: AnyObject, ObjectType: AnyObject>: @unchecked Sendable {
+    private let cache = NSCache<KeyType, ObjectType>()
+
+    /// Maximum number of objects the cache should hold.
+    var countLimit: Int {
+        get { cache.countLimit }
+        set { cache.countLimit = newValue }
+    }
+
+    func object(forKey key: KeyType) -> ObjectType? {
+        cache.object(forKey: key)
+    }
+
+    func setObject(_ obj: ObjectType, forKey key: KeyType) {
+        cache.setObject(obj, forKey: key)
+    }
+}

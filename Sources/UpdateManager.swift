@@ -290,9 +290,16 @@ class UpdateManager: ObservableObject {
                 
                 let newAppPath = tempExtractDir.appendingPathComponent(appName).path
                 var currentAppPath = Bundle.main.bundlePath
-                // Guard against running from a mounted DMG volume
+                // Guard against running from a mounted DMG volume — resolve the actual
+                // installation directory by checking ~/Applications first, then /Applications.
                 if currentAppPath.hasPrefix("/Volumes/") {
-                    currentAppPath = "/Applications/MySound.app"
+                    let userAppsPath = NSHomeDirectory() + "/Applications/MySound.app"
+                    let systemAppsPath = "/Applications/MySound.app"
+                    if fileManager.fileExists(atPath: userAppsPath) {
+                        currentAppPath = userAppsPath
+                    } else {
+                        currentAppPath = systemAppsPath
+                    }
                 }
                 
                 let pid = ProcessInfo.processInfo.processIdentifier

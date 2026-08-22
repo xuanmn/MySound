@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0",
+  "version": "1.5.2",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.5.0 - Automated CI/CD release packaging, Swift strict concurrency support, real-time volume listener re-registration on audio device switches, bounded log rotation, hardened installer and update pipelines."
+  "releaseNotes": "v1.5.2 - Asynchronous non-blocking file logger, dynamic user-level and system-level updater destination resolution, guarded CoreAudio property listener cleanup, and Swift 6 SendableCache concurrency hardening."
 }

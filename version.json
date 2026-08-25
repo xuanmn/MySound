@@ -1,5 +1,5 @@
 {
-  "version": "1.5.2",
+  "version": "1.6.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.5.2 - Asynchronous non-blocking file logger, dynamic user-level and system-level updater destination resolution, guarded CoreAudio property listener cleanup, and Swift 6 SendableCache concurrency hardening."
+  "releaseNotes": "v1.6.0 - Global audio output device selector with hardware transport detection (Bluetooth, USB, HDMI, DisplayPort, Built-in), smart SF Symbol device icons, persistent preferred device auto-reconnect, and seamless real-time audio re-routing."
 }

@@ -278,43 +278,52 @@ struct VolumeControlView: View {
             // MARK: Header & Master Volume
             // -----------------------------------------------------------------
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
+                HStack(alignment: .center) {
                     // Output device selection dropdown
-                    if tapManager.availableOutputDevices.count > 1 {
-                        Menu {
+                    Menu {
+                        Section(header: Text("Switch Output Device")) {
                             ForEach(tapManager.availableOutputDevices) { device in
                                 Button(action: {
                                     tapManager.setDefaultOutputDevice(device)
                                 }) {
                                     HStack {
-                                        Text(device.name)
+                                        Label {
+                                            Text(device.name)
+                                        } icon: {
+                                            Image(systemName: device.iconName)
+                                        }
                                         if tapManager.currentOutputDevice?.id == device.id {
                                             Image(systemName: "checkmark")
                                         }
                                     }
                                 }
                             }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(tapManager.currentOutputDevice?.name ?? "Output Device")
-                                    .font(.headline)
-                                    .foregroundColor(.primary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.blue)
+                            
+                            Text(tapManager.currentOutputDevice?.name ?? "Output Device")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            
+                            if tapManager.availableOutputDevices.count > 1 {
                                 Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption2)
+                                    .font(.system(size: 9, weight: .bold))
                                     .foregroundColor(.secondary)
                             }
                         }
-                        .menuStyle(.borderlessButton)
-                        .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
-                    } else {
-                        Text(tapManager.currentOutputDevice?.name ?? "Output Device")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.04))
+                        .cornerRadius(6)
                     }
+                    .menuStyle(.borderlessButton)
+                    .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
 
                     Spacer()
                     
@@ -334,7 +343,7 @@ struct VolumeControlView: View {
                 // Master Volume Slider Row: [Device Icon] [Speaker Mute Button] [Slider] [Percentage]
                 HStack(spacing: 6) {
                     // Device Icon
-                    Image(systemName: deviceIconName(for: tapManager.currentOutputDevice?.name))
+                    Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                         .frame(width: 18, height: 18)
@@ -648,25 +657,9 @@ struct VolumeControlView: View {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    /// Resolves an appropriate SF Symbol icon name based on the audio device name.
+    /// Resolves an appropriate SF Symbol icon name based on the active audio device.
     private func deviceIconName(for name: String?) -> String {
-        guard let name = name?.lowercased() else { return "laptopcomputer" }
-        if name.contains("airpod") {
-            return "airpodspro"
-        } else if name.contains("headphone") || name.contains("headset") || name.contains("earphone") {
-            return "headphones"
-        } else if name.contains("hdmi") || name.contains("tv") || name.contains("displayport") || name.contains("monitor") {
-            return "tv"
-        } else if name.contains("homepod") {
-            return "homepod.fill"
-        } else if name.contains("studio") || name.contains("pro display") {
-            return "display"
-        } else if name.contains("imac") || name.contains("mac pro") || name.contains("mac mini") || name.contains("desktop") {
-            return "desktopcomputer"
-        } else {
-            // Default built-in / MacBook Air / MacBook Pro speakers
-            return "laptopcomputer"
-        }
+        tapManager.currentOutputDevice?.iconName ?? "laptopcomputer"
     }
 
     // MARK: - CoreAudio Volume/Mute Property Listeners

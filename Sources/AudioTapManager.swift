@@ -77,6 +77,9 @@ class AudioTapManager: NSObject, ObservableObject {
     /// List of all detected output-capable audio devices on the system.
     @Published var availableOutputDevices: [AudioOutputDevice] = []
 
+    /// UserDefaults key for storing user's preferred output device UID.
+    private let preferredOutputDeviceUIDKey = "MySoundPreferredOutputDeviceUID"
+
     /// Dynamically resolved pointer to private `responsibility_get_pid_responsible_for_pid` symbol in libproc.
     /// This allows mapping sandboxed helper processes (like Chrome Helper or Safari WebContent) to their parent app.
     private nonisolated static let getResponsiblePID: (@convention(c) (pid_t) -> pid_t)? = {
@@ -263,10 +266,31 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Refreshes available output devices and recreates taps if the active output device changed.
     func refreshOutputDevices() {
         let devices = getAvailableOutputDevices()
-        let current = getDefaultOutputDevice()
+        var current = getDefaultOutputDevice()
+
+        // If a previously preferred device reconnected (e.g. AirPods), automatically switch to it
+        if let preferredUID = UserDefaults.standard.string(forKey: preferredOutputDeviceUIDKey),
+           let preferredDevice = devices.first(where: { $0.uid == preferredUID }),
+           current?.uid != preferredUID {
+            var devID = preferredDevice.id
+            let propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+            var propertyAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            if AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID) == noErr {
+                current = preferredDevice
+                AppLogger.shared.log("Restored preferred output device: \(preferredDevice.name) (\(preferredUID))")
+            }
+        }
+
         let deviceChanged = self.currentOutputDevice?.uid != current?.uid
         self.availableOutputDevices = devices
         self.currentOutputDevice = current
+        if let currentUID = current?.uid {
+            UserDefaults.standard.set(currentUID, forKey: preferredOutputDeviceUIDKey)
+        }
         if deviceChanged && current != nil {
             // Re-bind all active taps to the new physical output device
             recreateAllTaps()
@@ -688,7 +712,18 @@ class AudioTapManager: NSObject, ObservableObject {
                 deviceUID = uidStr
             }
 
-            outputDevices.append(AudioOutputDevice(id: deviceID, name: deviceName, uid: deviceUID))
+            // Get transport type
+            var transportAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var transportTypeFourCC: UInt32 = 0
+            var transportSize = UInt32(MemoryLayout<UInt32>.size)
+            let transportStatus = AudioObjectGetPropertyData(deviceID, &transportAddr, 0, nil, &transportSize, &transportTypeFourCC)
+            let transportType: AudioDeviceTransportType = (transportStatus == noErr) ? .from(fourCC: transportTypeFourCC) : .unknown
+
+            outputDevices.append(AudioOutputDevice(id: deviceID, name: deviceName, uid: deviceUID, transportType: transportType))
         }
 
         return outputDevices
@@ -723,8 +758,12 @@ class AudioTapManager: NSObject, ObservableObject {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID)
         if status == noErr {
             self.currentOutputDevice = device
+            UserDefaults.standard.set(device.uid, forKey: preferredOutputDeviceUIDKey)
+            AppLogger.shared.log("Switched default output device to \(device.name) (\(device.uid))")
+            // Re-bind all active taps to the new physical output device
+            recreateAllTaps()
         } else {
-            print("MySound: Failed to set default output device \(device.name) (status: \(status))")
+            AppLogger.shared.log("Failed to set default output device \(device.name) (status: \(status))")
         }
     }
 

@@ -1,7 +1,6 @@
 import Foundation
 import CoreAudio
 import AppKit
-import CoreGraphics
 import Accelerate
 
 // =============================================================================
@@ -273,7 +272,7 @@ class AudioTapManager: NSObject, ObservableObject {
         let newlyConnectedUIDs = previousKnownDeviceUIDs.isEmpty ? [] : currentUIDs.subtracting(previousKnownDeviceUIDs)
         previousKnownDeviceUIDs = currentUIDs
 
-        var current = getDefaultOutputDevice()
+        var current = getDefaultOutputDeviceFromList(devices)
 
         // Auto-restore preferred device ONLY if it was disconnected and just reconnected
         if let preferredUID = UserDefaults.standard.string(forKey: preferredOutputDeviceUIDKey),
@@ -749,6 +748,11 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Fetches the currently active default system audio output device.
     func getDefaultOutputDevice() -> AudioOutputDevice? {
+        return getDefaultOutputDeviceFromList(getAvailableOutputDevices())
+    }
+
+    /// Resolves the default output device from a pre-fetched device list, avoiding redundant HAL enumeration.
+    private func getDefaultOutputDeviceFromList(_ devices: [AudioOutputDevice]) -> AudioOutputDevice? {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(
@@ -759,9 +763,7 @@ class AudioTapManager: NSObject, ObservableObject {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr else {
             return nil
         }
-
-        let available = getAvailableOutputDevices()
-        return available.first(where: { $0.id == defaultOutputDeviceID })
+        return devices.first(where: { $0.id == defaultOutputDeviceID })
     }
 
     /// Switches the system-wide default output device to the specified hardware device.
@@ -787,61 +789,62 @@ class AudioTapManager: NSObject, ObservableObject {
 
     // MARK: - System Master Volume Helpers
 
-    /// Adjusts the global macOS master output volume (0.0...1.0) and mute flag on the default output device.
-    func setSystemVolume(_ volume: Float) {
+    /// Resolves the default output device ID, preferring the cached value for efficiency.
+    private func resolveDefaultOutputDeviceID() -> AudioDeviceID? {
+        if let cached = currentOutputDevice?.id { return cached }
         var defaultOutputDeviceID = AudioDeviceID(0)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
-            var vol = volume
-            // Set volume on Main element, and channels 1 and 2
-            for element in [kAudioObjectPropertyElementMain, 1, 2] {
-                var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
-                if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
-                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
-                }
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr else { return nil }
+        return defaultOutputDeviceID
+    }
+
+    /// Adjusts the global macOS master output volume (0.0...1.0) and mute flag on the default output device.
+    func setSystemVolume(_ volume: Float) {
+        guard let defaultOutputDeviceID = resolveDefaultOutputDeviceID() else { return }
+        var vol = volume
+        // Set volume on Main element, and channels 1 and 2
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
+            if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
+                _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
             }
-            
-            // Set hardware mute flag when volume drops to zero
-            var isMuted: UInt32 = (volume <= 0.001) ? 1 : 0
-            for element in [kAudioObjectPropertyElementMain, 1, 2] {
-                var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
-                if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
-                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &isMuted)
-                }
+        }
+        
+        // Set hardware mute flag when volume drops to zero
+        var isMuted: UInt32 = (volume <= 0.001) ? 1 : 0
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
+            if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
+                _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &isMuted)
             }
         }
     }
 
     /// Reads the current global macOS master output volume (0.0...1.0).
     func getSystemVolume() -> Float {
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
-            // Check mute property first
-            for element in [kAudioObjectPropertyElementMain, UInt32(1), UInt32(2)] {
-                var isMuted: UInt32 = 0
-                var muteSize = UInt32(MemoryLayout<UInt32>.size)
-                var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: element)
-                if AudioObjectGetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, &muteSize, &isMuted) == noErr {
-                    if isMuted == 1 {
-                        return 0.0
-                    }
+        guard let defaultOutputDeviceID = resolveDefaultOutputDeviceID() else { return 0.5 }
+        // Check mute property first
+        for element in [kAudioObjectPropertyElementMain, UInt32(1), UInt32(2)] {
+            var isMuted: UInt32 = 0
+            var muteSize = UInt32(MemoryLayout<UInt32>.size)
+            var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: element)
+            if AudioObjectGetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, &muteSize, &isMuted) == noErr {
+                if isMuted == 1 {
+                    return 0.0
                 }
             }
-
-            // Read scalar volume
-            var vol: Float32 = 0
-            var volSize = UInt32(MemoryLayout<Float32>.size)
-            var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
-            if AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol) != noErr {
-                volAddr.mElement = 1
-                AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol)
-            }
-            return Float(vol)
         }
-        return 0.5
+
+        // Read scalar volume
+        var vol: Float32 = 0
+        var volSize = UInt32(MemoryLayout<Float32>.size)
+        var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol) != noErr {
+            volAddr.mElement = 1
+            AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol)
+        }
+        return Float(vol)
     }
 
     /// Retrieves the string UID of the active default output device.
@@ -923,6 +926,12 @@ class AudioTapManager: NSObject, ObservableObject {
         let targetLocalizedName = targetApp?.localizedName?.lowercased()
         let targetBundleName = targetApp?.bundleURL?.deletingPathExtension().lastPathComponent.lowercased()
         
+        // Pre-index running apps by PID to avoid repeated NSRunningApplication lookups in the loop
+        var runningAppIndex: [pid_t: NSRunningApplication] = [:]
+        for app in NSWorkspace.shared.runningApplications {
+            runningAppIndex[app.processIdentifier] = app
+        }
+
         var matchingIDs: [AudioObjectID] = []
         for processID in processIDs {
             var pidSize = UInt32(MemoryLayout<pid_t>.size)
@@ -934,7 +943,7 @@ class AudioTapManager: NSObject, ObservableObject {
                 
                 if pidsToMatch.contains(processPID) || pidsToMatch.contains(procRespPID) || childPIDs.contains(processPID) {
                     matched = true
-                } else if let processApp = NSRunningApplication(processIdentifier: processPID), let procBundleID = processApp.bundleIdentifier?.lowercased(), let targetBundleID = targetBundleID, (procBundleID.hasPrefix(targetBundleID) || targetBundleID.hasPrefix(procBundleID)) {
+                } else if let processApp = runningAppIndex[processPID], let procBundleID = processApp.bundleIdentifier?.lowercased(), let targetBundleID = targetBundleID, (procBundleID.hasPrefix(targetBundleID) || targetBundleID.hasPrefix(procBundleID)) {
                     matched = true
                 } else if let procPath = Self.getPath(for: processPID)?.lowercased() {
                     if let targetLocalizedName = targetLocalizedName, !targetLocalizedName.isEmpty, procPath.contains(targetLocalizedName) {

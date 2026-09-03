@@ -657,11 +657,6 @@ struct VolumeControlView: View {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    /// Resolves an appropriate SF Symbol icon name based on the active audio device.
-    private func deviceIconName(for name: String?) -> String {
-        tapManager.currentOutputDevice?.iconName ?? "laptopcomputer"
-    }
-
     // MARK: - CoreAudio Volume/Mute Property Listeners
     // Event-driven callbacks replace polling timers, using zero CPU when idle.
 

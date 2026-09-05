@@ -276,71 +276,29 @@ struct VolumeControlView: View {
             }
 
             // -----------------------------------------------------------------
-            // MARK: Header & Master Volume
+            // MARK: Header & Master Volume (Modern Frosted Card Island)
             // -----------------------------------------------------------------
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 9) {
+                // Top Row: [OUTPUT Badge] and [Mute All Button]
                 HStack(alignment: .center) {
-                    // Output device selection dropdown
-                    Menu {
-                        Section(header: Text("Switch Output Device")) {
-                            ForEach(tapManager.availableOutputDevices) { device in
-                                Button(action: {
-                                    tapManager.setDefaultOutputDevice(device)
-                                }) {
-                                    HStack {
-                                        Label {
-                                            Text(device.name)
-                                        } icon: {
-                                            Image(systemName: device.iconName)
-                                        }
-                                        if tapManager.currentOutputDevice?.id == device.id {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.primary)
-                                .frame(width: 18, height: 18)
-                            
-                            Text(tapManager.currentOutputDevice?.name ?? "Output Device")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            
-                            if tapManager.availableOutputDevices.count > 1 {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 3)
-                        .background(isDeviceHovered ? Color.primary.opacity(0.08) : Color.clear)
-                        .cornerRadius(4)
-                        .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .padding(.leading, -4)
-                    .onHover { hovering in
-                        withAnimation(.easeInOut(duration: 0.12)) {
-                            isDeviceHovered = hovering
-                        }
-                    }
-                    .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
+                    Text("OUTPUT")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .tracking(0.6)
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Color.blue.opacity(0.14))
+                        )
 
                     Spacer()
-                    
+
                     // Batch Mute / Unmute Button
                     if !appManager.apps.isEmpty {
                         Button(action: toggleMuteAll) {
                             Text(isAllMuted ? "Unmute All" : "Mute All")
-                                .font(.caption)
+                                .font(.caption2)
                                 .fontWeight(.medium)
                                 .foregroundColor(.blue)
                         }
@@ -348,9 +306,72 @@ struct VolumeControlView: View {
                         .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
                     }
                 }
+                .frame(maxWidth: .infinity)
+
+                // Middle Row: Device Info & Switcher Menu
+                Menu {
+                    Section(header: Text("Switch Output Device")) {
+                        ForEach(tapManager.availableOutputDevices) { device in
+                            Button(action: {
+                                tapManager.setDefaultOutputDevice(device)
+                            }) {
+                                HStack {
+                                    Label {
+                                        Text(device.name)
+                                    } icon: {
+                                        Image(systemName: device.iconName)
+                                    }
+                                    if tapManager.currentOutputDevice?.id == device.id {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: 18, height: 18)
+
+                        Text(tapManager.currentOutputDevice?.name ?? "Output Device")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+
+                        Spacer()
+
+                        if tapManager.availableOutputDevices.count > 1 {
+                            HStack(spacing: 3) {
+                                Text("Switch")
+                                    .font(.system(size: 11, weight: .medium))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8, weight: .bold))
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(isDeviceHovered ? Color.primary.opacity(0.12) : Color.primary.opacity(0.06))
+                            .cornerRadius(5)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        isDeviceHovered = hovering
+                    }
+                }
+                .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
 
                 // Master Volume Slider Row: [Speaker Mute Button] [Slider] [Percentage]
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     // Master Speaker Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {
@@ -368,7 +389,7 @@ struct VolumeControlView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
-                    
+
                     // Custom Master Volume Slider
                     BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
                         .accessibilityLabel("System Master Volume")
@@ -395,17 +416,26 @@ struct VolumeControlView: View {
                             masterVolume = 1.0
                             tapManager.setSystemVolume(1.0)
                         }
-                    
+
                     // Percentage readout
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption.monospacedDigit())
                         .foregroundColor(masterVolume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
-                        .frame(width: 36, alignment: .trailing)
+                        .frame(width: 34, alignment: .trailing)
                 }
             }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+            .padding(.top, 10)
+            .padding(.bottom, 6)
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
                 if masterVolume > 0.001 {

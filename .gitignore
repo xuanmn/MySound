@@ -128,3 +128,6 @@ __pycache__/
 .venv/
 venv/
 ENV/
+
+# Brainstorming Visual Companion
+.superpowers/

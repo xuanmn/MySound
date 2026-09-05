@@ -188,7 +188,6 @@ struct VolumeControlView: View {
     @State private var isGearHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
-    @State private var isDeviceHovered: Bool = false
     
     // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
@@ -306,69 +305,32 @@ struct VolumeControlView: View {
                         .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
                     }
                 }
+                .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity)
 
-                // Middle Row: Device Info & Switcher Menu
-                Menu {
-                    Section(header: Text("Switch Output Device")) {
+                // Middle Section: Dynamic Direct 1-Click Selectable Device Rows
+                VStack(spacing: 3) {
+                    if tapManager.availableOutputDevices.isEmpty {
+                        OutputDeviceSelectableRow(
+                            device: tapManager.currentOutputDevice ?? AudioOutputDevice(id: 0, name: "Output Device", uid: "default"),
+                            isSelected: true,
+                            onSelect: {}
+                        )
+                    } else {
                         ForEach(tapManager.availableOutputDevices) { device in
-                            Button(action: {
-                                tapManager.setDefaultOutputDevice(device)
-                            }) {
-                                HStack {
-                                    Label {
-                                        Text(device.name)
-                                    } icon: {
-                                        Image(systemName: device.iconName)
-                                    }
-                                    if tapManager.currentOutputDevice?.id == device.id {
-                                        Image(systemName: "checkmark")
+                            OutputDeviceSelectableRow(
+                                device: device,
+                                isSelected: tapManager.currentOutputDevice?.id == device.id,
+                                onSelect: {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        tapManager.setDefaultOutputDevice(device)
                                     }
                                 }
-                            }
+                            )
                         }
                     }
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.primary)
-                            .frame(width: 18, height: 18)
-
-                        Text(tapManager.currentOutputDevice?.name ?? "Output Device")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-
-                        Spacer()
-
-                        if tapManager.availableOutputDevices.count > 1 {
-                            HStack(spacing: 3) {
-                                Text("Switch")
-                                    .font(.system(size: 11, weight: .medium))
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 8, weight: .bold))
-                            }
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(isDeviceHovered ? Color.primary.opacity(0.12) : Color.primary.opacity(0.06))
-                            .cornerRadius(5)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
                 }
-                .menuIndicator(.hidden)
-                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        isDeviceHovered = hovering
-                    }
-                }
-                .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
 
                 // Master Volume Slider Row: [Speaker Mute Button] [Slider] [Percentage]
                 HStack(spacing: 8) {
@@ -423,8 +385,11 @@ struct VolumeControlView: View {
                         .foregroundColor(masterVolume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
                         .frame(width: 34, alignment: .trailing)
                 }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity)
             }
-            .padding(10)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
@@ -784,6 +749,58 @@ struct VolumeControlView: View {
             muteListenerBlock = nil
         }
         listenedDeviceID = 0
+    }
+}
+
+// =============================================================================
+// MARK: - Output Device Selectable Row
+// =============================================================================
+
+/// `OutputDeviceSelectableRow` renders a direct 1-click selectable output device item
+/// with its hardware icon, device name, active checkmark, and subtle hover styling.
+struct OutputDeviceSelectableRow: View {
+    let device: AudioOutputDevice
+    let isSelected: Bool
+    let onSelect: () -> Void
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 7) {
+                Image(systemName: device.iconName)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
+                    .frame(width: 18, height: 18)
+
+                Text(device.name)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? Color.primary.opacity(0.08) : (isHovered ? Color.primary.opacity(0.04) : Color.clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+        .accessibilityLabel("\(device.name)\(isSelected ? ", currently active" : ", click to select")")
     }
 }
 

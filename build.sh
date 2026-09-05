@@ -84,6 +84,10 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <string>MySound needs access to audio to mix your application volumes.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>MySound needs access to system audio to capture per-app sounds.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>MySound accesses audio output devices including Bluetooth headphones and speakers.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>MySound accesses audio output devices including Bluetooth headphones and speakers.</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
 </dict>

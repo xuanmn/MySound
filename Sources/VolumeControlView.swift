@@ -188,6 +188,7 @@ struct VolumeControlView: View {
     @State private var isGearHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
+    @State private var isDeviceHovered: Bool = false
     
     // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
@@ -303,7 +304,8 @@ struct VolumeControlView: View {
                         HStack(spacing: 5) {
                             Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.blue)
+                                .foregroundColor(.primary)
+                                .frame(width: 18, height: 18)
                             
                             Text(tapManager.currentOutputDevice?.name ?? "Output Device")
                                 .font(.system(size: 13, weight: .semibold))
@@ -312,17 +314,24 @@ struct VolumeControlView: View {
                                 .truncationMode(.tail)
                             
                             if tapManager.availableOutputDevices.count > 1 {
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 9, weight: .bold))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8, weight: .bold))
                                     .foregroundColor(.secondary)
                             }
                         }
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 4)
                         .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.04))
-                        .cornerRadius(6)
+                        .background(isDeviceHovered ? Color.primary.opacity(0.08) : Color.clear)
+                        .cornerRadius(4)
+                        .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
+                    .padding(.leading, -4)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            isDeviceHovered = hovering
+                        }
+                    }
                     .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
 
                     Spacer()
@@ -340,14 +349,8 @@ struct VolumeControlView: View {
                     }
                 }
 
-                // Master Volume Slider Row: [Device Icon] [Speaker Mute Button] [Slider] [Percentage]
+                // Master Volume Slider Row: [Speaker Mute Button] [Slider] [Percentage]
                 HStack(spacing: 6) {
-                    // Device Icon
-                    Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                        .frame(width: 18, height: 18)
-
                     // Master Speaker Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {

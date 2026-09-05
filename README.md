@@ -80,7 +80,7 @@ If installing on a different Mac without an official Apple Developer ID certific
 
 | Control / Action | Description |
 | :--- | :--- |
-| **Output Selector** | Click top-left dropdown (e.g. *MacBook Air Speakers*) to switch active audio output device. |
+| **Output Selector** | Click the device chip in the header (e.g. *MacBook Air Speakers*) to switch active audio output device. |
 | **Hardware Icon** | Dynamic indicator displaying device type (`laptopcomputer`, `airpodspro`, `headphones`, `tv`, `desktopcomputer`). |
 | **Mute All / Unmute All** | Header button to instantly mute or restore volume across all active applications. |
 | **Master Volume Row** | Drag master slider or click speaker icon to mute/unmute global system audio. |
@@ -93,7 +93,7 @@ If installing on a different Mac without an official Apple Developer ID certific
 
 ## 🔒 Permissions & Privacy Guide
 
-MySound requires specific macOS permissions to intercept per-application audio streams. All audio processing is handled **100% locally on your Mac**.
+MySound requires specific macOS permissions to intercept per-application audio streams and detect output hardware. All audio processing is handled **100% locally on your Mac**.
 
 ### 1. System Audio Recording / Microphone Access
 MySound uses Apple's CoreAudio process tap framework (`CATapDescription`) to intercept app audio streams.
@@ -103,11 +103,25 @@ MySound uses Apple's CoreAudio process tap framework (`CATapDescription`) to int
 
 **How to grant permission:**
 1. MySound features a built-in **Permission Guidance Banner**. Click **Open System Settings** directly inside the app popover.
-2. In **System Settings** > **Privacy & Security** > **Screen & System Audio Recording** (or **Microphone** on macOS Sonoma), ensure **MySound** is toggled **ON**.
+2. In **System Settings** > **Privacy & Security**:
+   - **macOS 15 (Sequoia)**: Navigate to **System Audio Recording Only** (or **Screen & System Audio Recording**) and toggle **MySound** **ON**.
+   - **macOS 14 (Sonoma)**: Navigate to **Screen & System Audio Recording** (or **Microphone**) and toggle **MySound** **ON**.
 
 ---
 
-### 2. Opening for the First Time (macOS Gatekeeper)
+### 2. Bluetooth Access (New in v1.7.0)
+MySound dynamically scans and monitors connected audio hardware—such as AirPods, wireless headphones, and Bluetooth speakers—to display matching hardware icons and enable 1-click device switching.
+
+> [!NOTE]
+> **Why Bluetooth is requested**: macOS requires Bluetooth authorization for applications that discover and interact with peripheral audio devices. MySound only uses this to enumerate connected Bluetooth audio endpoints.
+
+**How to grant permission:**
+1. macOS will prompt you automatically when MySound accesses output audio devices. Click **Allow**.
+2. Or open **System Settings** > **Privacy & Security** > **Bluetooth** and ensure **MySound** is toggled **ON**.
+
+---
+
+### 3. Opening for the First Time (macOS Gatekeeper)
 If installing via manual DMG download, macOS Gatekeeper may show a warning:
 `"MySound cannot be opened because it is from an unidentified developer."`
 
@@ -119,7 +133,7 @@ If installing via manual DMG download, macOS Gatekeeper may show a warning:
 
 ---
 
-### 3. Launch at Login Permission
+### 4. Launch at Login Permission (Optional)
 When you enable **Launch at Login** in the gear menu, MySound registers a login item via Apple's `SMAppService` framework.
 
 **How to manage:**
@@ -141,7 +155,8 @@ When you enable **Launch at Login** in the gear menu, MySound registers a login 
 
 - **App fails to control audio or open on another Mac?** Pre-built binaries are signed with an ad-hoc identity. On other Macs, Gatekeeper or TCC permission policies may block process tapping. Solve this by cloning the repository on that Mac and running `./build.sh` (Option 3).
 - **An app isn't appearing in the list?** MySound automatically detects applications when they start playing audio. Start sound playback in the app (e.g. play a song on Spotify or video on YouTube) and it will appear within 2 seconds.
-- **Volume slider doesn't change sound?** Ensure MySound has been granted Microphone/Audio Recording permissions under **System Settings > Privacy & Security > Microphone**.
+- **Volume slider doesn't change sound?** Ensure MySound has been granted System Audio Recording / Microphone permissions under **System Settings > Privacy & Security > System Audio Recording Only** (macOS 15+) or **Screen & System Audio Recording** (macOS 14+).
+- **Bluetooth headphones or speakers not appearing in output list?** Ensure MySound has Bluetooth permission granted under **System Settings > Privacy & Security > Bluetooth**.
 - **Audio distortion or lag?** MySound automatically matches your default audio output sample rate. Try restarting MySound or toggling your output device from the header menu.
 
 ---
@@ -150,5 +165,3 @@ When you enable **Launch at Login** in the gear menu, MySound registers a login 
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
----
-*Developed with ❤️ by Xuanmn*

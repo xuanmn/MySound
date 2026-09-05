@@ -186,6 +186,7 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
+    @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
     
@@ -275,79 +276,50 @@ struct VolumeControlView: View {
             }
 
             // -----------------------------------------------------------------
-            // MARK: Header & Master Volume
+            // MARK: Header & Master Volume (Wrapping Flow Capsules)
             // -----------------------------------------------------------------
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center) {
-                    // Output device selection dropdown
-                    Menu {
-                        Section(header: Text("Switch Output Device")) {
+                // Top Row: Dynamic 1-Click Selectable Wrapping Device Capsules & Mute All
+                HStack(alignment: .top, spacing: 6) {
+                    WrappingHStack(horizontalSpacing: 6, verticalSpacing: 6) {
+                        if tapManager.availableOutputDevices.isEmpty {
+                            OutputDeviceChip(
+                                device: tapManager.currentOutputDevice ?? AudioOutputDevice(id: 0, name: "Output Device", uid: "default"),
+                                isSelected: true,
+                                onSelect: {}
+                            )
+                        } else {
                             ForEach(tapManager.availableOutputDevices) { device in
-                                Button(action: {
-                                    tapManager.setDefaultOutputDevice(device)
-                                }) {
-                                    HStack {
-                                        Label {
-                                            Text(device.name)
-                                        } icon: {
-                                            Image(systemName: device.iconName)
-                                        }
-                                        if tapManager.currentOutputDevice?.id == device.id {
-                                            Image(systemName: "checkmark")
+                                OutputDeviceChip(
+                                    device: device,
+                                    isSelected: tapManager.currentOutputDevice?.id == device.id,
+                                    onSelect: {
+                                        withAnimation(.easeInOut(duration: 0.15)) {
+                                            tapManager.setDefaultOutputDevice(device)
                                         }
                                     }
-                                }
+                                )
                             }
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.blue)
-                            
-                            Text(tapManager.currentOutputDevice?.name ?? "Output Device")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            
-                            if tapManager.availableOutputDevices.count > 1 {
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.04))
-                        .cornerRadius(6)
                     }
-                    .menuStyle(.borderlessButton)
-                    .accessibilityLabel("Select Output Device, currently \(tapManager.currentOutputDevice?.name ?? "Output Device")")
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Spacer()
-                    
-                    // Batch Mute / Unmute Button
                     if !appManager.apps.isEmpty {
                         Button(action: toggleMuteAll) {
                             Text(isAllMuted ? "Unmute All" : "Mute All")
-                                .font(.caption)
-                                .fontWeight(.medium)
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.blue)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 4)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
                     }
                 }
+                .padding(.horizontal, 4)
 
-                // Master Volume Slider Row: [Device Icon] [Speaker Mute Button] [Slider] [Percentage]
-                HStack(spacing: 6) {
-                    // Device Icon
-                    Image(systemName: tapManager.currentOutputDevice?.iconName ?? "laptopcomputer")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                        .frame(width: 18, height: 18)
-
+                // Master Volume Slider Row: [Speaker Mute Button] [Slider] [Percentage]
+                HStack(spacing: 8) {
                     // Master Speaker Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {
@@ -358,14 +330,19 @@ struct VolumeControlView: View {
                         tapManager.setSystemVolume(Float(masterVolume))
                     }) {
                         Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.3.fill")
-                            .foregroundColor(masterVolume <= 0.001 ? .red : .secondary)
-                            .font(.system(size: 11))
+                            .foregroundColor(masterVolume <= 0.001 ? .red : (isMasterMuteHovered ? .primary : .secondary))
+                            .font(.system(size: 12))
                             .frame(width: 18, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            isMasterMuteHovered = hovering
+                        }
+                    }
                     .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
-                    
+
                     // Custom Master Volume Slider
                     BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
                         .accessibilityLabel("System Master Volume")
@@ -392,17 +369,20 @@ struct VolumeControlView: View {
                             masterVolume = 1.0
                             tapManager.setSystemVolume(1.0)
                         }
-                    
+
                     // Percentage readout
                     Text("\(Int(masterVolume * 100))%")
                         .font(.caption.monospacedDigit())
                         .foregroundColor(masterVolume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
-                        .frame(width: 36, alignment: .trailing)
+                        .frame(width: 34, alignment: .trailing)
                 }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+            .padding(.horizontal, 6)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
             .onAppear {
                 masterVolume = Double(tapManager.getSystemVolume())
                 if masterVolume > 0.001 {
@@ -521,11 +501,17 @@ struct VolumeControlView: View {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
                 
-                // Re-check permissions every 3 seconds so banner vanishes when user approves in Settings
+                // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
-                permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
-                    Task { @MainActor in
-                        hasPermission = AudioTapManager.hasAudioCapturePermission()
+                if !hasPermission {
+                    permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { timer in
+                        Task { @MainActor in
+                            let granted = AudioTapManager.hasAudioCapturePermission()
+                            hasPermission = granted
+                            if granted {
+                                timer.invalidate()
+                            }
+                        }
                     }
                 }
             }
@@ -751,6 +737,109 @@ struct VolumeControlView: View {
             muteListenerBlock = nil
         }
         listenedDeviceID = 0
+    }
+}
+
+// =============================================================================
+// MARK: - Wrapping HStack Layout
+// =============================================================================
+
+/// A custom SwiftUI `Layout` that arranges subviews horizontally and wraps to subsequent lines
+/// when available horizontal width is exceeded.
+struct WrappingHStack: Layout {
+    var horizontalSpacing: CGFloat = 6
+    var verticalSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let width = proposal.width ?? 300
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var maxRowWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let itemWidth = min(size.width, width)
+            if currentX + itemWidth > width && currentX > 0 {
+                maxRowWidth = max(maxRowWidth, currentX - horizontalSpacing)
+                currentX = 0
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            lineHeight = max(lineHeight, size.height)
+            currentX += itemWidth + horizontalSpacing
+        }
+        maxRowWidth = max(maxRowWidth, currentX > 0 ? currentX - horizontalSpacing : 0)
+
+        return CGSize(width: min(width, maxRowWidth), height: currentY + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        var currentX: CGFloat = bounds.minX
+        var currentY: CGFloat = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let itemWidth = min(size.width, bounds.width)
+            if currentX + itemWidth > bounds.maxX && currentX > bounds.minX {
+                currentX = bounds.minX
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: currentX, y: currentY), proposal: ProposedViewSize(width: itemWidth, height: size.height))
+            lineHeight = max(lineHeight, size.height)
+            currentX += itemWidth + horizontalSpacing
+        }
+    }
+}
+
+// =============================================================================
+// MARK: - Output Device Chip
+// =============================================================================
+
+/// `OutputDeviceChip` renders an individual interactive output device capsule button
+/// with device-specific SF Symbol, localized device name, active state indicator,
+/// and smooth hover brightening.
+struct OutputDeviceChip: View {
+    let device: AudioOutputDevice
+    let isSelected: Bool
+    let onSelect: () -> Void
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 5) {
+                Image(systemName: device.iconName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
+
+                Text(device.name)
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(isSelected ? Color.primary.opacity(0.14) : (isHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04)))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(isSelected ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 0.5)
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+        .accessibilityLabel("\(device.name)\(isSelected ? ", currently active" : ", click to select")")
     }
 }
 

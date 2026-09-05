@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
     name: Build & Verify Universal Binary
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout repository
@@ -25,7 +25,7 @@ jobs:
 
       - name: Select Xcode
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app /Applications/Xcode_15*.app 2>/dev/null | sort -V | tail -1)
           if [ -n "$XCODE_PATH" ]; then
             sudo xcode-select -s "$XCODE_PATH"
             echo "Selected: $XCODE_PATH"

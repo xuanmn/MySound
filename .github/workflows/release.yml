@@ -17,7 +17,7 @@ permissions:
 jobs:
   release:
     name: Build & Publish Release
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout repository
@@ -27,7 +27,7 @@ jobs:
 
       - name: Select Xcode
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app /Applications/Xcode_15*.app 2>/dev/null | sort -V | tail -1)
           if [ -n "$XCODE_PATH" ]; then
             sudo xcode-select -s "$XCODE_PATH"
             echo "Selected: $XCODE_PATH"
@@ -42,11 +42,15 @@ jobs:
 
       - name: Resolve Release Tag & Notes
         id: release_info
+        env:
+          INPUT_TAG: ${{ inputs.version_tag || github.event.inputs.version_tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
         run: |
-          if [ -n "${{ github.event.inputs.version_tag }}" ]; then
-            TAG="${{ github.event.inputs.version_tag }}"
-          elif [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ -n "$REF_NAME" ] && [[ "$REF" == refs/tags/* ]]; then
+            TAG="$REF_NAME"
           else
             VER=$(grep '"version"' version.json | head -1 | sed 's/.*: *"\(.*\)".*/\1/')
             TAG="v${VER}"
@@ -59,6 +63,7 @@ jobs:
           tag_name: ${{ steps.release_info.outputs.tag }}
           name: "MySound ${{ steps.release_info.outputs.tag }}"
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             build/MySound.dmg
             build/MySound.zip

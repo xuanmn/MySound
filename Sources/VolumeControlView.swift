@@ -501,11 +501,17 @@ struct VolumeControlView: View {
                 let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
                 appManager.apps = newApps
                 
-                // Re-check permissions every 3 seconds so banner vanishes when user approves in Settings
+                // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
-                permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
-                    Task { @MainActor in
-                        hasPermission = AudioTapManager.hasAudioCapturePermission()
+                if !hasPermission {
+                    permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { timer in
+                        Task { @MainActor in
+                            let granted = AudioTapManager.hasAudioCapturePermission()
+                            hasPermission = granted
+                            if granted {
+                                timer.invalidate()
+                            }
+                        }
                     }
                 }
             }
@@ -754,14 +760,15 @@ struct WrappingHStack: Layout {
 
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
-            if currentX + size.width > width && currentX > 0 {
+            let itemWidth = min(size.width, width)
+            if currentX + itemWidth > width && currentX > 0 {
                 maxRowWidth = max(maxRowWidth, currentX - horizontalSpacing)
                 currentX = 0
                 currentY += lineHeight + verticalSpacing
                 lineHeight = 0
             }
             lineHeight = max(lineHeight, size.height)
-            currentX += size.width + horizontalSpacing
+            currentX += itemWidth + horizontalSpacing
         }
         maxRowWidth = max(maxRowWidth, currentX > 0 ? currentX - horizontalSpacing : 0)
 
@@ -776,15 +783,15 @@ struct WrappingHStack: Layout {
 
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
-            if currentX + size.width > bounds.maxX && currentX > bounds.minX {
+            let itemWidth = min(size.width, bounds.width)
+            if currentX + itemWidth > bounds.maxX && currentX > bounds.minX {
                 currentX = bounds.minX
                 currentY += lineHeight + verticalSpacing
                 lineHeight = 0
             }
-            let itemWidth = min(size.width, bounds.width)
             subview.place(at: CGPoint(x: currentX, y: currentY), proposal: ProposedViewSize(width: itemWidth, height: size.height))
             lineHeight = max(lineHeight, size.height)
-            currentX += size.width + horizontalSpacing
+            currentX += itemWidth + horizontalSpacing
         }
     }
 }

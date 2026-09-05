@@ -8,13 +8,12 @@ import AppKit
 /// `MySoundAppDelegate` handles macOS application lifecycle events that SwiftUI does not expose,
 /// ensuring clean teardown of CoreAudio resources (aggregate devices, process taps) when the
 /// app is terminated by the system (e.g. logout, shutdown, force quit).
+@MainActor
 class MySoundAppDelegate: NSObject, NSApplicationDelegate {
     /// Called by macOS when the application is about to terminate (user quit, system shutdown, etc.).
     /// Ensures all CoreAudio process taps and aggregate devices are destroyed cleanly.
     func applicationWillTerminate(_ notification: Notification) {
-        Task { @MainActor in
-            AudioTapManager.shared.removeAllTaps()
-        }
+        AudioTapManager.shared.removeAllTaps()
     }
 }
 

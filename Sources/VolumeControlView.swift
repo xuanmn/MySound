@@ -186,6 +186,7 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
+    @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
     
@@ -275,42 +276,51 @@ struct VolumeControlView: View {
             }
 
             // -----------------------------------------------------------------
-            // MARK: Header & Master Volume (Minimalist Seamless)
+            // MARK: Header & Master Volume (Wrapping Flow Capsules)
             // -----------------------------------------------------------------
-            VStack(alignment: .leading, spacing: 6) {
-                // Dynamic Direct 1-Click Selectable Device Rows
-                VStack(spacing: 2) {
-                    if tapManager.availableOutputDevices.isEmpty {
-                        OutputDeviceSelectableRow(
-                            device: tapManager.currentOutputDevice ?? AudioOutputDevice(id: 0, name: "Output Device", uid: "default"),
-                            isSelected: true,
-                            showMuteAll: !appManager.apps.isEmpty,
-                            isAllMuted: isAllMuted,
-                            onToggleMuteAll: toggleMuteAll,
-                            onSelect: {}
-                        )
-                    } else {
-                        ForEach(Array(tapManager.availableOutputDevices.enumerated()), id: \.element.id) { index, device in
-                            OutputDeviceSelectableRow(
-                                device: device,
-                                isSelected: tapManager.currentOutputDevice?.id == device.id,
-                                showMuteAll: index == 0 && !appManager.apps.isEmpty,
-                                isAllMuted: isAllMuted,
-                                onToggleMuteAll: toggleMuteAll,
-                                onSelect: {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        tapManager.setDefaultOutputDevice(device)
-                                    }
-                                }
+            VStack(alignment: .leading, spacing: 8) {
+                // Top Row: Dynamic 1-Click Selectable Wrapping Device Capsules & Mute All
+                HStack(alignment: .top, spacing: 6) {
+                    WrappingHStack(horizontalSpacing: 6, verticalSpacing: 6) {
+                        if tapManager.availableOutputDevices.isEmpty {
+                            OutputDeviceChip(
+                                device: tapManager.currentOutputDevice ?? AudioOutputDevice(id: 0, name: "Output Device", uid: "default"),
+                                isSelected: true,
+                                onSelect: {}
                             )
+                        } else {
+                            ForEach(tapManager.availableOutputDevices) { device in
+                                OutputDeviceChip(
+                                    device: device,
+                                    isSelected: tapManager.currentOutputDevice?.id == device.id,
+                                    onSelect: {
+                                        withAnimation(.easeInOut(duration: 0.15)) {
+                                            tapManager.setDefaultOutputDevice(device)
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Master Volume Slider Row: [Device Mute Button] [Slider] [Percentage]
+                    if !appManager.apps.isEmpty {
+                        Button(action: toggleMuteAll) {
+                            Text(isAllMuted ? "Unmute All" : "Mute All")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
+                    }
+                }
+                .padding(.horizontal, 4)
+
+                // Master Volume Slider Row: [Speaker Mute Button] [Slider] [Percentage]
                 HStack(spacing: 8) {
-                    // Master Speaker/Device Mute Button
+                    // Master Speaker Mute Button
                     Button(action: {
                         if masterVolume > 0.001 {
                             masterVolume = 0
@@ -319,13 +329,18 @@ struct VolumeControlView: View {
                         }
                         tapManager.setSystemVolume(Float(masterVolume))
                     }) {
-                        Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : (tapManager.currentOutputDevice?.iconName ?? "laptopcomputer"))
-                            .foregroundColor(masterVolume <= 0.001 ? .red : .secondary)
+                        Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.3.fill")
+                            .foregroundColor(masterVolume <= 0.001 ? .red : (isMasterMuteHovered ? .primary : .secondary))
                             .font(.system(size: 12))
                             .frame(width: 18, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            isMasterMuteHovered = hovering
+                        }
+                    }
                     .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
 
                     // Custom Master Volume Slider
@@ -720,66 +735,104 @@ struct VolumeControlView: View {
 }
 
 // =============================================================================
-// MARK: - Output Device Selectable Row
+// MARK: - Wrapping HStack Layout
 // =============================================================================
 
-/// `OutputDeviceSelectableRow` renders a direct 1-click selectable output device item
-/// with its hardware icon, device name, active checkmark, and subtle hover styling.
-struct OutputDeviceSelectableRow: View {
+/// A custom SwiftUI `Layout` that arranges subviews horizontally and wraps to subsequent lines
+/// when available horizontal width is exceeded.
+struct WrappingHStack: Layout {
+    var horizontalSpacing: CGFloat = 6
+    var verticalSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let width = proposal.width ?? 300
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var maxRowWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentX + size.width > width && currentX > 0 {
+                maxRowWidth = max(maxRowWidth, currentX - horizontalSpacing)
+                currentX = 0
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + horizontalSpacing
+        }
+        maxRowWidth = max(maxRowWidth, currentX > 0 ? currentX - horizontalSpacing : 0)
+
+        return CGSize(width: min(width, maxRowWidth), height: currentY + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        var currentX: CGFloat = bounds.minX
+        var currentY: CGFloat = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentX + size.width > bounds.maxX && currentX > bounds.minX {
+                currentX = bounds.minX
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            let itemWidth = min(size.width, bounds.width)
+            subview.place(at: CGPoint(x: currentX, y: currentY), proposal: ProposedViewSize(width: itemWidth, height: size.height))
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + horizontalSpacing
+        }
+    }
+}
+
+// =============================================================================
+// MARK: - Output Device Chip
+// =============================================================================
+
+/// `OutputDeviceChip` renders an individual interactive output device capsule button
+/// with device-specific SF Symbol, localized device name, active state indicator,
+/// and smooth hover brightening.
+struct OutputDeviceChip: View {
     let device: AudioOutputDevice
     let isSelected: Bool
-    var showMuteAll: Bool = false
-    var isAllMuted: Bool = false
-    var onToggleMuteAll: (() -> Void)? = nil
     let onSelect: () -> Void
     @State private var isHovered: Bool = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(action: onSelect) {
-                HStack(spacing: 7) {
-                    Image(systemName: device.iconName)
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                        .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary.opacity(0.7)))
-                        .frame(width: 18, height: 18)
+        Button(action: onSelect) {
+            HStack(spacing: 5) {
+                Image(systemName: device.iconName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
 
-                    Text(device.name)
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                        .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary.opacity(0.7)))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Spacer()
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? Color.primary.opacity(0.07) : (isHovered ? Color.primary.opacity(0.03) : Color.clear))
-                )
-                .contentShape(Rectangle())
+                Text(device.name)
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .primary : (isHovered ? .primary : .secondary))
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
-            .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.12)) {
-                    isHovered = hovering
-                }
-            }
-            .accessibilityLabel("\(device.name)\(isSelected ? ", currently active" : ", click to select")")
-
-            if showMuteAll, let toggleMute = onToggleMuteAll {
-                Button(action: toggleMute) {
-                    Text(isAllMuted ? "Unmute All" : "Mute All")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundColor(.blue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isAllMuted ? "Unmute all running applications" : "Mute all running applications")
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(isSelected ? Color.primary.opacity(0.14) : (isHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04)))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(isSelected ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 0.5)
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
             }
         }
+        .accessibilityLabel("\(device.name)\(isSelected ? ", currently active" : ", click to select")")
     }
 }
 

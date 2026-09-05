@@ -1,5 +1,5 @@
 {
-  "version": "1.6.0",
+  "version": "1.7.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.6.0 - Global audio output device selector with hardware transport detection (Bluetooth, USB, HDMI, DisplayPort, Built-in), smart SF Symbol device icons, persistent preferred device auto-reconnect, and seamless real-time audio re-routing."
+  "releaseNotes": "v1.7.0 - Modern seamless output device switcher with real-time hardware detection, direct 1-click output switching, subtle typographic selection indicators, and dynamic hardware icons matching the active audio device on the master volume slider."
 }

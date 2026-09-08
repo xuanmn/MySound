@@ -371,11 +371,17 @@ struct VolumeControlView: View {
                             tapManager.setSystemVolume(1.0)
                         }
 
-                    // Percentage readout
-                    Text("\(Int(masterVolume * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundColor(masterVolume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
-                        .frame(width: 34, alignment: .trailing)
+                    // Editable percentage readout (click-to-type & hover scroll)
+                    EditableVolumeText(
+                        volume: $masterVolume,
+                        onVolumeChange: { newVol in
+                            if newVol > 0.001 {
+                                previousMasterVolume = newVol
+                            }
+                            tapManager.setSystemVolume(Float(newVol))
+                        },
+                        isMuted: masterVolume <= 0.001
+                    )
                 }
                 .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity)
@@ -948,11 +954,17 @@ struct AppVolumeRow: View {
                     onVolumeChange(1.0)
                 }
 
-            // Percentage readout
-            Text("\(Int(app.volume * 100))%")
-                .font(.caption.monospacedDigit())
-                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
-                .frame(width: 34, alignment: .trailing)
+            // Editable percentage readout (click-to-type & hover scroll)
+            EditableVolumeText(
+                volume: $app.volume,
+                onVolumeChange: { newVol in
+                    if newVol > 0.001 {
+                        previousVolume = newVol
+                    }
+                    onVolumeChange(Float(newVol))
+                },
+                isMuted: app.volume <= 0.001
+            )
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -982,6 +994,180 @@ struct AppVolumeRow: View {
                 isPlayingAudio = active
             }
         }
+    }
+}
+
+// =============================================================================
+// MARK: - Editable Volume Text & Scroll Wheel Component
+// =============================================================================
+
+/// `ScrollWheelReceiverView` is an AppKit NSView that captures scroll wheel deltas and clicks,
+/// and automatically sets a pointing hand cursor on hover.
+final class ScrollWheelReceiverView: NSView {
+    var onScroll: ((Double) -> Void)?
+    var onClick: (() -> Void)?
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let delta = event.scrollingDeltaY
+        if abs(delta) > 0.02 {
+            let change: Double
+            if event.hasPreciseScrollingDeltas {
+                change = Double(delta) * 0.003
+            } else {
+                change = delta > 0 ? 0.02 : -0.02
+            }
+            onScroll?(change)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+}
+
+/// Bridges `ScrollWheelReceiverView` into SwiftUI.
+struct ScrollWheelListener: NSViewRepresentable {
+    var onScroll: (Double) -> Void
+    var onClick: () -> Void
+
+    func makeNSView(context: Context) -> ScrollWheelReceiverView {
+        let view = ScrollWheelReceiverView()
+        view.onScroll = onScroll
+        view.onClick = onClick
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollWheelReceiverView, context: Context) {
+        nsView.onScroll = onScroll
+        nsView.onClick = onClick
+    }
+}
+
+/// `EditableVolumeText` displays the volume percentage readout and allows users to:
+/// 1. Hover to reveal a subtle interactive badge with pointing hand cursor.
+/// 2. Scroll with trackpad or mouse wheel to scrub volume smoothly.
+/// 3. Click to open an inline numeric text field and type any exact percentage (0-100).
+struct EditableVolumeText: View {
+    @Binding var volume: Double
+    var onVolumeChange: (Double) -> Void
+    var isMuted: Bool = false
+
+    @State private var isHovered: Bool = false
+    @State private var isEditing: Bool = false
+    @State private var textInput: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        ZStack {
+            if isEditing {
+                // Inline Numeric Input Field
+                HStack(spacing: 0) {
+                    TextField("", text: $textInput)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .textFieldStyle(.plain)
+                        .frame(width: 24)
+                        .focused($isFocused)
+                        .onChange(of: textInput) { _, newValue in
+                            let digits = newValue.filter { $0.isNumber }
+                            if digits != newValue {
+                                textInput = String(digits.prefix(3))
+                            }
+                        }
+                        .onSubmit {
+                            commitEdit()
+                        }
+                        .onExitCommand {
+                            cancelEdit()
+                        }
+                    Text("%")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 3)
+                .padding(.vertical, 2)
+                .background(Color.white)
+                .cornerRadius(4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.blue, lineWidth: 1.2)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: 1, x: 0, y: 1)
+            } else {
+                // Formatted Percentage Readout with Scroll & Click Interceptor
+                HStack(spacing: 0) {
+                    Text("\(Int(round(volume * 100)))%")
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(isMuted || volume <= 0.001 ? .secondary.opacity(0.5) : (isHovered ? .primary : .secondary))
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isHovered ? Color.black.opacity(0.06) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isHovered ? Color.black.opacity(0.12) : Color.clear, lineWidth: 0.5)
+                )
+                .overlay(
+                    ScrollWheelListener(
+                        onScroll: { change in
+                            let newVol = min(1.0, max(0.0, volume + change))
+                            volume = newVol
+                            onVolumeChange(newVol)
+                        },
+                        onClick: {
+                            startEditing()
+                        }
+                    )
+                )
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.1)) {
+                        isHovered = hovering
+                    }
+                }
+                .help("Click to type (0–100%) or scroll to adjust")
+            }
+        }
+        .frame(width: 36, height: 20, alignment: .trailing)
+        .onChange(of: isFocused) { _, focused in
+            if !focused && isEditing {
+                commitEdit()
+            }
+        }
+    }
+
+    private func startEditing() {
+        textInput = "\(Int(round(volume * 100)))"
+        isEditing = true
+        DispatchQueue.main.async {
+            isFocused = true
+        }
+    }
+
+    private func commitEdit() {
+        let sanitized = textInput.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "%", with: "")
+        if let intVal = Int(sanitized) {
+            let clamped = min(100, max(0, intVal))
+            let newVol = Double(clamped) / 100.0
+            volume = newVol
+            onVolumeChange(newVol)
+        }
+        isEditing = false
+        isFocused = false
+    }
+
+    private func cancelEdit() {
+        isEditing = false
+        isFocused = false
     }
 }
 

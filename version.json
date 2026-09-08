@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0",
+  "version": "1.8.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.7.0 - Modern seamless output device switcher with real-time hardware detection, direct 1-click output switching, subtle typographic selection indicators, and dynamic hardware icons matching the active audio device on the master volume slider."
+  "releaseNotes": "v1.8.0 - Re-engineered settings menu with native clean drop-down presentation, custom crisp vector status indicators for Launch at Login and System Audio Permissions, subtle hover outline on the settings gear icon, real-time app audio playback activity tracking, and refined footer version readout."
 }

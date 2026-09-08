@@ -187,7 +187,7 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
-    @State private var isSettingsPresented: Bool = false
+    @State private var activeAudioPIDs: Set<pid_t> = []
     @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
@@ -227,16 +227,6 @@ struct VolumeControlView: View {
                 }
                 appManager.apps[i].volume = 0
                 tapManager.setVolume(for: pid, volume: 0)
-            }
-        }
-    }
-
-    /// Resets all tracked applications to 100% volume.
-    private func resetAllAppVolumes() {
-        withAnimation(.easeInOut(duration: 0.15)) {
-            for i in 0..<appManager.apps.count {
-                appManager.apps[i].volume = 1.0
-                tapManager.setVolume(for: appManager.apps[i].pid, volume: 1.0)
             }
         }
     }
@@ -406,11 +396,15 @@ struct VolumeControlView: View {
                 if masterVolume > 0.001 {
                     previousMasterVolume = masterVolume
                 }
-                checkLaunchAtLoginStatus()
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 
                 // Set up event-driven CoreAudio property listeners for master volume
                 setupVolumeListeners()
+
+                // Asynchronously query Launch at Login status
+                Task { @MainActor in
+                    checkLaunchAtLoginStatus()
+                }
             }
             .onDisappear {
                 // Remove listeners when the popover closes to conserve system resources
@@ -503,7 +497,7 @@ struct VolumeControlView: View {
                     if appManager.apps.count <= 6 {
                         VStack(spacing: 3) {
                             ForEach($appManager.apps) { $app in
-                                AppVolumeRow(app: $app) { newVolume in
+                                AppVolumeRow(app: $app, isPlayingAudio: activeAudioPIDs.contains(app.pid)) { newVolume in
                                     tapManager.setVolume(for: app.pid, volume: newVolume)
                                 }
                             }
@@ -515,7 +509,7 @@ struct VolumeControlView: View {
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(spacing: 3) {
                                 ForEach($appManager.apps) { $app in
-                                    AppVolumeRow(app: $app) { newVolume in
+                                    AppVolumeRow(app: $app, isPlayingAudio: activeAudioPIDs.contains(app.pid)) { newVolume in
                                         tapManager.setVolume(for: app.pid, volume: newVolume)
                                     }
                                 }
@@ -532,8 +526,8 @@ struct VolumeControlView: View {
             .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
-                let newApps = AppManager.getRunningApps(existingApps: appManager.apps)
-                appManager.apps = newApps
+                // Asynchronously query audio apps in background without stalling UI presentation
+                appManager.updateApps()
                 
                 // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
@@ -563,7 +557,7 @@ struct VolumeControlView: View {
             Divider()
 
             // -----------------------------------------------------------------
-            // MARK: Footer (Quit & Settings)
+            // MARK: Footer (Quit & Version)
             // -----------------------------------------------------------------
             HStack(spacing: 8) {
                 // Quit Button with Power Icon, ⌘Q Shortcut & Hover Effect
@@ -598,44 +592,71 @@ struct VolumeControlView: View {
 
                 Spacer()
 
-                // Version Badge (reads dynamically from Info.plist stamped from version.json)
+                // Subtle In-App Version Readout
                 if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !version.isEmpty {
                     Text("v\(version)")
-                        .font(.caption2)
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                         .foregroundColor(.secondary.opacity(0.5))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.04))
+                        .cornerRadius(4)
                 }
 
-                // Settings Gear Button with Popover
-                Button(action: {
-                    isSettingsPresented.toggle()
-                }) {
+                // Native macOS Dropdown Settings Menu
+                Menu {
+                    Toggle("Launch at Login", isOn: Binding(
+                        get: { isLaunchAtLogin },
+                        set: { newValue in
+                            isLaunchAtLogin = newValue
+                            toggleLaunchAtLogin(newValue)
+                        }
+                    ))
+
+                    Divider()
+
+                    Button(action: {
+                        AudioTapManager.openSystemAudioPermissionSettings()
+                    }) {
+                        Label(
+                            hasPermission ? "System Audio Permission: Granted" : "Grant Audio Permission...",
+                            systemImage: hasPermission ? "checkmark.shield" : "lock.shield"
+                        )
+                    }
+
+                    Divider()
+
+                    Button(action: {
+                        updateManager.checkForUpdates(manual: true)
+                    }) {
+                        Label(
+                            updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                    }
+                    .disabled(updateManager.isChecking || updateManager.isDownloading)
+
+                    if let url = URL(string: "https://github.com/xuanmn/MySound") {
+                        Link(destination: url) {
+                            Label("GitHub Repository", systemImage: "link")
+                        }
+                    }
+                } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(isGearHovered || isSettingsPresented ? .primary : .secondary)
+                        .foregroundColor(isGearHovered ? .primary : .secondary)
                         .padding(6)
-                        .background(isGearHovered || isSettingsPresented ? Color.primary.opacity(0.12) : Color.clear)
+                        .background(isGearHovered ? Color.primary.opacity(0.12) : Color.clear)
                         .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .accessibilityLabel("Settings")
                 .onHover { hovering in
                     withAnimation(.easeInOut(duration: 0.12)) {
                         isGearHovered = hovering
                     }
-                }
-                .popover(isPresented: $isSettingsPresented, arrowEdge: .top) {
-                    QuickSettingsPopoverView(
-                        isLaunchAtLogin: $isLaunchAtLogin,
-                        onToggleLaunchAtLogin: { newValue in
-                            toggleLaunchAtLogin(newValue)
-                        },
-                        hasPermission: hasPermission,
-                        onResetVolumes: {
-                            resetAllAppVolumes()
-                        }
-                    )
-                    .environmentObject(updateManager)
-                    .preferredColorScheme(.dark)
                 }
             }
             .padding(.horizontal, 12)
@@ -645,6 +666,20 @@ struct VolumeControlView: View {
         .frame(width: 330)
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
         .preferredColorScheme(.dark)
+        // Centralized timer for checking audio activity across all apps
+        .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
+            var active: Set<pid_t> = []
+            for app in appManager.apps {
+                if AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2) {
+                    active.insert(app.pid)
+                }
+            }
+            if active != activeAudioPIDs {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    activeAudioPIDs = active
+                }
+            }
+        }
         // Observe system volume change notifications posted from CoreAudio property listeners
         .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
             if let volume = notification.userInfo?["volume"] as? Double {
@@ -661,9 +696,6 @@ struct VolumeControlView: View {
     }
 
     // -------------------------------------------------------------------------
-    // MARK: - Helper Methods
-    // -------------------------------------------------------------------------
-
     /// Registers or unregisters the app with macOS ServiceManagement for Launch at Login.
     private func toggleLaunchAtLogin(_ enabled: Bool) {
         let service = SMAppService.mainApp
@@ -682,6 +714,8 @@ struct VolumeControlView: View {
     private func checkLaunchAtLoginStatus() {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
+
+
 
     // MARK: - CoreAudio Volume/Mute Property Listeners
     // Event-driven callbacks replace polling timers, using zero CPU when idle.
@@ -891,10 +925,10 @@ struct OutputDeviceChip: View {
 /// real-time audio activity wave indicator, per-app speaker mute button, custom slider, and percentage readout.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
+    var isPlayingAudio: Bool = false
     var onVolumeChange: (Float) -> Void
     @State private var previousVolume: Double = 0.5
     @State private var isHovered: Bool = false
-    @State private var isPlayingAudio: Bool = false
 
     var body: some View {
         HStack(spacing: 5) {
@@ -994,19 +1028,6 @@ struct AppVolumeRow: View {
         .onAppear {
             if app.volume > 0.001 {
                 previousVolume = app.volume
-            }
-            checkAudioActivity()
-        }
-        .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
-            checkAudioActivity()
-        }
-    }
-
-    private func checkAudioActivity() {
-        let active = AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2)
-        if active != isPlayingAudio {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isPlayingAudio = active
             }
         }
     }
@@ -1268,157 +1289,7 @@ struct BoxySlider: View {
     }
 }
 
-// =============================================================================
-// MARK: - Quick Settings Floating Popover View
-// =============================================================================
 
-/// `QuickSettingsPopoverView` renders a floating macOS settings card anchored above the gear button.
-struct QuickSettingsPopoverView: View {
-    @Binding var isLaunchAtLogin: Bool
-    var onToggleLaunchAtLogin: (Bool) -> Void
-    var hasPermission: Bool
-    var onResetVolumes: () -> Void
-
-    @EnvironmentObject private var updateManager: UpdateManager
-    @State private var didReset: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header
-            HStack(spacing: 6) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
-                Text("Settings")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundColor(.primary)
-                Spacer()
-                if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !version.isEmpty {
-                    Text("v\(version)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary.opacity(0.6))
-                }
-            }
-            .padding(.bottom, 2)
-
-            Divider()
-
-            // General Preferences
-            Toggle(isOn: $isLaunchAtLogin) {
-                Text("Launch at Login")
-                    .font(.system(size: 11.5))
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .onChange(of: isLaunchAtLogin) { _, newValue in
-                onToggleLaunchAtLogin(newValue)
-            }
-
-            Divider()
-
-            // Quick Actions & Permissions
-            VStack(spacing: 6) {
-                // Reset App Volumes Button
-                Button(action: {
-                    onResetVolumes()
-                    withAnimation { didReset = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        withAnimation { didReset = false }
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: didReset ? "checkmark" : "arrow.counterclockwise")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(didReset ? .green : .secondary)
-                            .frame(width: 14)
-                        Text(didReset ? "Volumes Reset to 100%" : "Reset App Volumes to 100%")
-                            .font(.system(size: 11))
-                            .foregroundColor(didReset ? .green : .primary)
-                        Spacer()
-                    }
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                // Permissions Status & Link
-                Button(action: {
-                    AudioTapManager.openSystemAudioPermissionSettings()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: hasPermission ? "checkmark.shield.fill" : "lock.shield.fill")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(hasPermission ? .green : .orange)
-                            .frame(width: 14)
-                        Text("System Audio Permission")
-                            .font(.system(size: 11))
-                            .foregroundColor(.primary)
-                        Spacer()
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary.opacity(0.7))
-                    }
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            Divider()
-
-            // Updates & GitHub
-            VStack(spacing: 6) {
-                Button(action: {
-                    updateManager.checkForUpdates(manual: true)
-                }) {
-                    HStack(spacing: 6) {
-                        if updateManager.isChecking {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .frame(width: 14)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .frame(width: 14)
-                        }
-                        Text(updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...")
-                            .font(.system(size: 11))
-                            .foregroundColor(.primary)
-                        Spacer()
-                    }
-                    .padding(.vertical, 3)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(updateManager.isChecking || updateManager.isDownloading)
-
-                if let url = URL(string: "https://github.com/xuanmn/MySound") {
-                    Link(destination: url) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "link")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .frame(width: 14)
-                            Text("GitHub Repository")
-                                .font(.system(size: 11))
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary.opacity(0.7))
-                        }
-                        .padding(.vertical, 3)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(12)
-        .frame(width: 220)
-    }
-}
 
 // =============================================================================
 // MARK: - Native Frosted Glass Visual Effect

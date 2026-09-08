@@ -172,6 +172,32 @@ class AppManager: ObservableObject {
 // MARK: - Main Volume Control View
 // =============================================================================
 
+@MainActor
+final class SettingsMenuCoordinator: NSObject {
+    static let shared = SettingsMenuCoordinator()
+
+    var onToggleLogin: (() -> Void)?
+    var onOpenPermissions: (() -> Void)?
+    var onCheckUpdates: (() -> Void)?
+    var onOpenGitHub: (() -> Void)?
+
+    @objc func toggleLogin() {
+        onToggleLogin?()
+    }
+
+    @objc func openPermissions() {
+        onOpenPermissions?()
+    }
+
+    @objc func checkUpdates() {
+        onCheckUpdates?()
+    }
+
+    @objc func openGitHub() {
+        onOpenGitHub?()
+    }
+}
+
 /// `VolumeControlView` is the primary popover interface for MySound.
 ///
 /// Sections:
@@ -603,55 +629,28 @@ struct VolumeControlView: View {
                         .cornerRadius(4)
                 }
 
-                // Native macOS Dropdown Settings Menu
-                Menu {
-                    Button(action: {
-                        let nextState = !isLaunchAtLogin
-                        isLaunchAtLogin = nextState
-                        toggleLaunchAtLogin(nextState)
-                    }) {
-                        Text("\(isLaunchAtLogin ? "🟢" : "⚪")  Start on Login")
-                    }
-
-                    Divider()
-
-                    Button(action: {
-                        AudioTapManager.openSystemAudioPermissionSettings()
-                    }) {
-                        Text("\(hasPermission ? "🟢" : "🟠")  System Audio Permission")
-                    }
-
-                    Divider()
-
-                    Button(action: {
-                        updateManager.checkForUpdates(manual: true)
-                    }) {
-                        Label(
-                            updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...",
-                            systemImage: "arrow.triangle.2.circlepath"
-                        )
-                    }
-                    .disabled(updateManager.isChecking || updateManager.isDownloading)
-
-                    if let url = URL(string: "https://github.com/xuanmn/MySound") {
-                        Link(destination: url) {
-                            Label("GitHub Repository", systemImage: "link")
-                        }
-                    }
-                } label: {
+                // Settings Gear Button with Outline Box Hover Effect
+                Button(action: {
+                    showSettingsMenu()
+                }) {
                     Image(systemName: "gearshape.fill")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 11.5, weight: .medium))
                         .foregroundColor(isGearHovered ? .primary : .secondary)
-                        .padding(6)
-                        .background(isGearHovered ? Color.primary.opacity(0.12) : Color.clear)
-                        .clipShape(Circle())
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(isGearHovered ? Color.white.opacity(0.12) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(isGearHovered ? Color.white.opacity(0.18) : Color.clear, lineWidth: 0.5)
+                        )
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
+                .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
                 .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.12)) {
+                    withAnimation(.easeInOut(duration: 0.1)) {
                         isGearHovered = hovering
                     }
                 }
@@ -710,6 +709,71 @@ struct VolumeControlView: View {
     /// Queries the current Launch at Login registration status.
     private func checkLaunchAtLoginStatus() {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Displays the native macOS dropdown settings menu anchored to the gear button.
+    private func showSettingsMenu() {
+        let coordinator = SettingsMenuCoordinator.shared
+        coordinator.onToggleLogin = {
+            let nextState = !isLaunchAtLogin
+            isLaunchAtLogin = nextState
+            toggleLaunchAtLogin(nextState)
+        }
+        coordinator.onOpenPermissions = {
+            AudioTapManager.openSystemAudioPermissionSettings()
+        }
+        coordinator.onCheckUpdates = {
+            updateManager.checkForUpdates(manual: true)
+        }
+        coordinator.onOpenGitHub = {
+            if let url = URL(string: "https://github.com/xuanmn/MySound") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+
+        let menu = NSMenu()
+
+        let loginItem = NSMenuItem(
+            title: "\(isLaunchAtLogin ? "🟢" : "⚪")  Start on Login",
+            action: #selector(SettingsMenuCoordinator.toggleLogin),
+            keyEquivalent: ""
+        )
+        loginItem.target = coordinator
+        menu.addItem(loginItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let permItem = NSMenuItem(
+            title: "\(hasPermission ? "🟢" : "🟠")  System Audio Permission",
+            action: #selector(SettingsMenuCoordinator.openPermissions),
+            keyEquivalent: ""
+        )
+        permItem.target = coordinator
+        menu.addItem(permItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let updateItem = NSMenuItem(
+            title: updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...",
+            action: #selector(SettingsMenuCoordinator.checkUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = coordinator
+        updateItem.isEnabled = !updateManager.isChecking && !updateManager.isDownloading
+        menu.addItem(updateItem)
+
+        let gitHubItem = NSMenuItem(
+            title: "GitHub Repository",
+            action: #selector(SettingsMenuCoordinator.openGitHub),
+            keyEquivalent: ""
+        )
+        gitHubItem.target = coordinator
+        menu.addItem(gitHubItem)
+
+        if let event = NSApp.currentEvent, let window = event.window {
+            let location = window.mouseLocationOutsideOfEventStream
+            menu.popUp(positioning: nil, at: location, in: window.contentView)
+        }
     }
 
 

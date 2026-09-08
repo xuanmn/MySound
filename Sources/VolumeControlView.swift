@@ -809,15 +809,25 @@ struct VolumeControlView: View {
             .withSymbolConfiguration(symConfig)
         menu.addItem(gitHubItem)
 
-        // Anchor menu neatly inside the window bounds directly above the gear button
+        // Anchor menu neatly inside the window bounds directly above the footer bar
         guard let window = NSApp.currentEvent?.window ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
               let contentView = window.contentView else { return }
 
-        let menuWidth = menu.size.width
-        let targetX = max(10, contentView.bounds.width - menuWidth - 10)
-        let targetY: CGFloat = contentView.isFlipped ? (contentView.bounds.height - 38) : 38
+        let menuSize = menu.size
+        let rightMargin: CGFloat = 12
+        let footerHeight: CGFloat = 36
+        let gap: CGFloat = 6
 
-        menu.popUp(positioning: menu.items.last, at: NSPoint(x: targetX, y: targetY), in: contentView)
+        let targetX = max(10, contentView.bounds.width - menuSize.width - rightMargin)
+        let targetY: CGFloat
+        if contentView.isFlipped {
+            let idealY = contentView.bounds.height - footerHeight - gap - menuSize.height
+            targetY = max(10, idealY)
+        } else {
+            targetY = footerHeight + gap + menuSize.height
+        }
+
+        menu.popUp(positioning: nil, at: NSPoint(x: targetX, y: targetY), in: contentView)
     }
 
 

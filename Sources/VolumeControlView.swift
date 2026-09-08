@@ -605,33 +605,37 @@ struct VolumeControlView: View {
                         .foregroundColor(.secondary.opacity(0.5))
                 }
 
-                // Settings Gear Menu
-                Menu {
-                    Toggle("Launch at Login", isOn: $isLaunchAtLogin)
-                        .onChange(of: isLaunchAtLogin) { _, newValue in
-                            toggleLaunchAtLogin(newValue)
-                        }
-                    
-                    Divider()
-                    
-                    Button("Check for Updates...") {
-                        updateManager.checkForUpdates(manual: true)
-                    }
-                    .disabled(updateManager.isChecking || updateManager.isDownloading)
-                } label: {
+                // Settings Gear Button with Popover
+                Button(action: {
+                    isSettingsPresented.toggle()
+                }) {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(isGearHovered ? .primary : .secondary)
+                        .foregroundColor(isGearHovered || isSettingsPresented ? .primary : .secondary)
                         .padding(6)
-                        .background(isGearHovered ? Color.primary.opacity(0.08) : Color.clear)
+                        .background(isGearHovered || isSettingsPresented ? Color.primary.opacity(0.12) : Color.clear)
                         .clipShape(Circle())
                 }
-                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
                 .onHover { hovering in
                     withAnimation(.easeInOut(duration: 0.12)) {
                         isGearHovered = hovering
                     }
+                }
+                .popover(isPresented: $isSettingsPresented, arrowEdge: .top) {
+                    QuickSettingsPopoverView(
+                        isLaunchAtLogin: $isLaunchAtLogin,
+                        onToggleLaunchAtLogin: { newValue in
+                            toggleLaunchAtLogin(newValue)
+                        },
+                        hasPermission: hasPermission,
+                        onResetVolumes: {
+                            resetAllAppVolumes()
+                        }
+                    )
+                    .environmentObject(updateManager)
+                    .preferredColorScheme(.dark)
                 }
             }
             .padding(.horizontal, 12)
@@ -1261,6 +1265,158 @@ struct BoxySlider: View {
             )
         }
         .frame(height: max(thumbSize + 4, 18))
+    }
+}
+
+// =============================================================================
+// MARK: - Quick Settings Floating Popover View
+// =============================================================================
+
+/// `QuickSettingsPopoverView` renders a floating macOS settings card anchored above the gear button.
+struct QuickSettingsPopoverView: View {
+    @Binding var isLaunchAtLogin: Bool
+    var onToggleLaunchAtLogin: (Bool) -> Void
+    var hasPermission: Bool
+    var onResetVolumes: () -> Void
+
+    @EnvironmentObject private var updateManager: UpdateManager
+    @State private var didReset: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Text("Settings")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundColor(.primary)
+                Spacer()
+                if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !version.isEmpty {
+                    Text("v\(version)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+            }
+            .padding(.bottom, 2)
+
+            Divider()
+
+            // General Preferences
+            Toggle(isOn: $isLaunchAtLogin) {
+                Text("Launch at Login")
+                    .font(.system(size: 11.5))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .onChange(of: isLaunchAtLogin) { _, newValue in
+                onToggleLaunchAtLogin(newValue)
+            }
+
+            Divider()
+
+            // Quick Actions & Permissions
+            VStack(spacing: 6) {
+                // Reset App Volumes Button
+                Button(action: {
+                    onResetVolumes()
+                    withAnimation { didReset = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation { didReset = false }
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: didReset ? "checkmark" : "arrow.counterclockwise")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(didReset ? .green : .secondary)
+                            .frame(width: 14)
+                        Text(didReset ? "Volumes Reset to 100%" : "Reset App Volumes to 100%")
+                            .font(.system(size: 11))
+                            .foregroundColor(didReset ? .green : .primary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                // Permissions Status & Link
+                Button(action: {
+                    AudioTapManager.openSystemAudioPermissionSettings()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: hasPermission ? "checkmark.shield.fill" : "lock.shield.fill")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(hasPermission ? .green : .orange)
+                            .frame(width: 14)
+                        Text("System Audio Permission")
+                            .font(.system(size: 11))
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Divider()
+
+            // Updates & GitHub
+            VStack(spacing: 6) {
+                Button(action: {
+                    updateManager.checkForUpdates(manual: true)
+                }) {
+                    HStack(spacing: 6) {
+                        if updateManager.isChecking {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .frame(width: 14)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .frame(width: 14)
+                        }
+                        Text(updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...")
+                            .font(.system(size: 11))
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(updateManager.isChecking || updateManager.isDownloading)
+
+                if let url = URL(string: "https://github.com/xuanmn/MySound") {
+                    Link(destination: url) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "link")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .frame(width: 14)
+                            Text("GitHub Repository")
+                                .font(.system(size: 11))
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 220)
     }
 }
 

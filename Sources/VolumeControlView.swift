@@ -187,6 +187,7 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
+    @State private var isSettingsPresented: Bool = false
     @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
@@ -226,6 +227,16 @@ struct VolumeControlView: View {
                 }
                 appManager.apps[i].volume = 0
                 tapManager.setVolume(for: pid, volume: 0)
+            }
+        }
+    }
+
+    /// Resets all tracked applications to 100% volume.
+    private func resetAllAppVolumes() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            for i in 0..<appManager.apps.count {
+                appManager.apps[i].volume = 1.0
+                tapManager.setVolume(for: appManager.apps[i].pid, volume: 1.0)
             }
         }
     }

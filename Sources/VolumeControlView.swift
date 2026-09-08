@@ -711,6 +711,32 @@ struct VolumeControlView: View {
         isLaunchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    /// Generates a crisp vector status dot image for NSMenuItem indicators.
+    private func makeStatusDot(color: NSColor, filled: Bool = true) -> NSImage {
+        let size = NSSize(width: 14, height: 14)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let dotDiameter: CGFloat = 8
+            let dotRect = NSRect(
+                x: (rect.width - dotDiameter) / 2,
+                y: (rect.height - dotDiameter) / 2,
+                width: dotDiameter,
+                height: dotDiameter
+            )
+            let path = NSBezierPath(ovalIn: dotRect)
+            if filled {
+                color.setFill()
+                path.fill()
+            } else {
+                path.lineWidth = 1.3
+                color.setStroke()
+                path.stroke()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
     /// Displays the native macOS dropdown settings menu anchored to the gear button.
     private func showSettingsMenu() {
         let coordinator = SettingsMenuCoordinator.shared
@@ -733,26 +759,34 @@ struct VolumeControlView: View {
 
         let menu = NSMenu()
 
+        // 1. Start on Login
         let loginItem = NSMenuItem(
-            title: "\(isLaunchAtLogin ? "🟢" : "⚪")  Start on Login",
+            title: "Start on Login",
             action: #selector(SettingsMenuCoordinator.toggleLogin),
             keyEquivalent: ""
         )
         loginItem.target = coordinator
+        loginItem.image = isLaunchAtLogin
+            ? makeStatusDot(color: .systemGreen, filled: true)
+            : makeStatusDot(color: NSColor(white: 0.55, alpha: 0.45), filled: true)
         menu.addItem(loginItem)
 
-        menu.addItem(NSMenuItem.separator())
-
+        // 2. System Audio Permission
         let permItem = NSMenuItem(
-            title: "\(hasPermission ? "🟢" : "🟠")  System Audio Permission",
+            title: "System Audio Permission",
             action: #selector(SettingsMenuCoordinator.openPermissions),
             keyEquivalent: ""
         )
         permItem.target = coordinator
+        permItem.image = hasPermission
+            ? makeStatusDot(color: .systemGreen, filled: true)
+            : makeStatusDot(color: .systemOrange, filled: true)
         menu.addItem(permItem)
 
         menu.addItem(NSMenuItem.separator())
 
+        // 3. Check for Updates...
+        let symConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
         let updateItem = NSMenuItem(
             title: updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...",
             action: #selector(SettingsMenuCoordinator.checkUpdates),
@@ -760,20 +794,30 @@ struct VolumeControlView: View {
         )
         updateItem.target = coordinator
         updateItem.isEnabled = !updateManager.isChecking && !updateManager.isDownloading
+        updateItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)?
+            .withSymbolConfiguration(symConfig)
         menu.addItem(updateItem)
 
+        // 4. GitHub Repository
         let gitHubItem = NSMenuItem(
             title: "GitHub Repository",
             action: #selector(SettingsMenuCoordinator.openGitHub),
             keyEquivalent: ""
         )
         gitHubItem.target = coordinator
+        gitHubItem.image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
+            .withSymbolConfiguration(symConfig)
         menu.addItem(gitHubItem)
 
-        if let event = NSApp.currentEvent, let window = event.window {
-            let location = window.mouseLocationOutsideOfEventStream
-            menu.popUp(positioning: nil, at: location, in: window.contentView)
-        }
+        // Anchor menu neatly inside the window bounds directly above the gear button
+        guard let window = NSApp.currentEvent?.window ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+              let contentView = window.contentView else { return }
+
+        let menuWidth = menu.size.width
+        let targetX = max(10, contentView.bounds.width - menuWidth - 10)
+        let targetY: CGFloat = contentView.isFlipped ? (contentView.bounds.height - 38) : 38
+
+        menu.popUp(positioning: menu.items.last, at: NSPoint(x: targetX, y: targetY), in: contentView)
     }
 
 

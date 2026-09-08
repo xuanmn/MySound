@@ -10,6 +10,11 @@ import AppKit
 /// app is terminated by the system (e.g. logout, shutdown, force quit).
 @MainActor
 class MySoundAppDelegate: NSObject, NSApplicationDelegate {
+    /// Called when macOS has initialized the application instance.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp?.appearance = NSAppearance(named: .aqua)
+    }
+
     /// Called by macOS when the application is about to terminate (user quit, system shutdown, etc.).
     /// Ensures all CoreAudio process taps and aggregate devices are destroyed cleanly.
     func applicationWillTerminate(_ notification: Notification) {
@@ -36,9 +41,6 @@ struct MySoundApp: App {
     /// Initializes core managers upon startup.
     init() {
         print("MySound Starting Up...")
-        
-        // Force light mode appearance across the application
-        NSApp.appearance = NSAppearance(named: .aqua)
 
         // 1. Initialize AudioTapManager:
         //    Sets up CoreAudio HAL listeners for process audio events and hardware output device changes.

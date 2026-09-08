@@ -605,23 +605,20 @@ struct VolumeControlView: View {
 
                 // Native macOS Dropdown Settings Menu
                 Menu {
-                    Toggle("Launch at Login", isOn: Binding(
-                        get: { isLaunchAtLogin },
-                        set: { newValue in
-                            isLaunchAtLogin = newValue
-                            toggleLaunchAtLogin(newValue)
-                        }
-                    ))
+                    Button(action: {
+                        let nextState = !isLaunchAtLogin
+                        isLaunchAtLogin = nextState
+                        toggleLaunchAtLogin(nextState)
+                    }) {
+                        Text("\(isLaunchAtLogin ? "🟢" : "⚪")  Start on Login")
+                    }
 
                     Divider()
 
                     Button(action: {
                         AudioTapManager.openSystemAudioPermissionSettings()
                     }) {
-                        Label(
-                            hasPermission ? "System Audio Permission: Granted" : "Grant Audio Permission...",
-                            systemImage: hasPermission ? "checkmark.shield" : "lock.shield"
-                        )
+                        Text("\(hasPermission ? "🟢" : "🟠")  System Audio Permission")
                     }
 
                     Divider()

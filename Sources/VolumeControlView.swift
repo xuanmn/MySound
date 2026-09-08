@@ -41,10 +41,10 @@ struct AppVolume: Identifiable {
 class AppManager: ObservableObject {
     /// Shared singleton instance.
     static let shared = AppManager()
-    
+
     /// Published list of apps currently playing audio, bound to the SwiftUI view.
     @Published var apps: [AppVolume] = []
-    
+
     /// Polling timer to detect when apps start or stop playing audio.
     private var timer: Timer?
 
@@ -69,7 +69,7 @@ class AppManager: ObservableObject {
             name: NSWorkspace.didTerminateApplicationNotification,
             object: nil
         )
-        
+
         // Periodically refresh (every 1.5 seconds) to catch audio playback start/stop events.
         self.timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -92,19 +92,19 @@ class AppManager: ObservableObject {
     @objc func updateApps(notification: Notification? = nil) {
         pendingUpdate?.cancel()
         let existingApps = self.apps
-        
+
         let workItem = DispatchWorkItem { [weak self] in
             let newApps = Self.getRunningApps(existingApps: existingApps)
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 let currentPIDs = self.apps.map { $0.pid }
                 let newPIDs = newApps.map { $0.pid }
-                
+
                 // Only trigger SwiftUI view updates if the list of active PIDs changed
                 if currentPIDs != newPIDs {
                     self.apps = newApps
                 }
-                
+
                 // Ensure taps exist for all active apps
                 for app in newApps {
                     AudioTapManager.shared.ensureTapCreated(for: app.pid)
@@ -144,7 +144,7 @@ class AppManager: ObservableObject {
     nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
         // Step 1: Query CoreAudio for all PIDs actively outputting audio
         let activeAudioPIDs = AudioTapManager.getAudioActivePIDs(onlyPlayingAudio: true)
-        
+
         // Step 2: Query NSWorkspace for regular GUI applications (ignoring background daemons)
         let allRunning = NSWorkspace.shared.runningApplications
         let runningApps = allRunning.filter { app in
@@ -217,7 +217,7 @@ struct VolumeControlView: View {
     @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
-    
+
     // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
     @State private var muteListenerBlock: AudioObjectPropertyListenerBlock?
@@ -423,7 +423,7 @@ struct VolumeControlView: View {
                     previousMasterVolume = masterVolume
                 }
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
-                
+
                 // Set up event-driven CoreAudio property listeners for master volume
                 setupVolumeListeners()
 
@@ -554,7 +554,7 @@ struct VolumeControlView: View {
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 // Asynchronously query audio apps in background without stalling UI presentation
                 appManager.updateApps()
-                
+
                 // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
                 if !hasPermission {

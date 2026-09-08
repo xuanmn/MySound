@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import CoreAudio
+import Combine
 
 // =============================================================================
 // MARK: - Notifications
@@ -482,19 +483,35 @@ struct VolumeControlView: View {
                     .transition(.opacity)
                 } else {
                     // List of apps currently producing sound
-                    VStack(spacing: 4) {
-                        ForEach($appManager.apps) { $app in
-                            AppVolumeRow(app: $app) { newVolume in
-                                tapManager.setVolume(for: app.pid, volume: newVolume)
+                    if appManager.apps.count <= 6 {
+                        VStack(spacing: 3) {
+                            ForEach($appManager.apps) { $app in
+                                AppVolumeRow(app: $app) { newVolume in
+                                    tapManager.setVolume(for: app.pid, volume: newVolume)
+                                }
                             }
                         }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 6)
+                        .transition(.opacity)
+                    } else {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(spacing: 3) {
+                                ForEach($appManager.apps) { $app in
+                                    AppVolumeRow(app: $app) { newVolume in
+                                        tapManager.setVolume(for: app.pid, volume: newVolume)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 6)
+                        }
+                        .frame(maxHeight: 280)
+                        .transition(.opacity)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 6)
-                    .transition(.opacity)
                 }
             }
-            .frame(width: 300)
+            .frame(width: 330)
             .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
@@ -604,7 +621,9 @@ struct VolumeControlView: View {
             .padding(.vertical, 8)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         }
+        .frame(width: 330)
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
+        .preferredColorScheme(.light)
         // Observe system volume change notifications posted from CoreAudio property listeners
         .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
             if let volume = notification.userInfo?["volume"] as? Double {
@@ -752,7 +771,7 @@ struct WrappingHStack: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard !subviews.isEmpty else { return .zero }
-        let width = proposal.width ?? 300
+        let width = proposal.width ?? 330
         var currentX: CGFloat = 0
         var currentY: CGFloat = 0
         var lineHeight: CGFloat = 0
@@ -847,23 +866,42 @@ struct OutputDeviceChip: View {
 // MARK: - App Volume Row
 // =============================================================================
 
-/// `AppVolumeRow` renders a minimal single-line application row with its icon on the side,
-/// custom slider in the center, and percentage readout on the right.
+/// `AppVolumeRow` renders a polished 1-line application row with its icon, localized app name,
+/// real-time audio activity wave indicator, per-app speaker mute button, custom slider, and percentage readout.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
     @State private var previousVolume: Double = 0.5
     @State private var isHovered: Bool = false
+    @State private var isPlayingAudio: Bool = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             // Application Icon with Native Tooltip
             Image(nsImage: app.icon)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 18, height: 18)
+                .cornerRadius(3)
                 .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
                 .help(app.name)
+
+            // Localized Application Name (fixed width ensures uniform slider alignment)
+            Text(app.name)
+                .font(.system(size: 11.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.6) : .primary)
+                .frame(width: 74, alignment: .leading)
+                .help(app.name)
+
+            // Live Audio Activity Waveform (shows when process produces audible sound)
+            Image(systemName: "waveform")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.3) : .blue)
+                .opacity(isPlayingAudio && app.volume > 0.001 ? 0.9 : 0.0)
+                .frame(width: 12)
+                .help(isPlayingAudio ? "\(app.name) is currently playing audio" : "")
 
             // Per-app Speaker Mute Button
             Button(action: {
@@ -914,13 +952,12 @@ struct AppVolumeRow: View {
             Text("\(Int(app.volume * 100))%")
                 .font(.caption.monospacedDigit())
                 .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.5) : .secondary)
-                .frame(width: 36, alignment: .trailing)
+                .frame(width: 34, alignment: .trailing)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
         .cornerRadius(6)
-        .help(app.name)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) {
                 isHovered = hovering
@@ -931,6 +968,19 @@ struct AppVolumeRow: View {
             if app.volume > 0.001 {
                 previousVolume = app.volume
             }
+            checkAudioActivity()
+        }
+        .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
+            checkAudioActivity()
+        }
+    }
+
+    private func checkAudioActivity() {
+        let active = AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2)
+        if active != isPlayingAudio {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isPlayingAudio = active
+            }
         }
     }
 }
@@ -940,16 +990,15 @@ struct AppVolumeRow: View {
 // =============================================================================
 
 /// `BoxySlider` is a custom SwiftUI slider styled to match modern macOS system sliders:
-/// - Ultra-thin horizontal track.
-/// - Rounded capsule thumb handle with subtle drop shadow and hover outline.
+/// - 4px continuous capsule horizontal track.
+/// - Circular adaptive macOS knob handle with subtle drop shadow, hover brightening, and scale-on-drag physics.
 /// - Smooth drag gesture with snap-to-edge boundaries.
 struct BoxySlider: View {
     @Binding var value: Double
     var range: ClosedRange<Double> = 0...1
     var tint: Color = .blue
-    var trackHeight: CGFloat = 2
-    var thumbWidth: CGFloat = 20
-    var thumbHeight: CGFloat = 12
+    var trackHeight: CGFloat = 4
+    var thumbSize: CGFloat = 13
 
     @State private var isHovered: Bool = false
     @State private var isDragging: Bool = false
@@ -957,43 +1006,48 @@ struct BoxySlider: View {
     var body: some View {
         GeometryReader { geometry in
             let totalWidth = geometry.size.width
-            let usableWidth = max(totalWidth - thumbWidth, 1)
+            let usableWidth = max(totalWidth - thumbSize, 1)
             let percent = max(0, min(1, CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))))
             let thumbX = percent * usableWidth
-            let fillWidth = percent * usableWidth + (thumbWidth / 2)
+            let fillWidth = max(trackHeight, percent * usableWidth + (thumbSize / 2))
 
             ZStack(alignment: .leading) {
                 // Background Track (Inactive Bar)
-                Rectangle()
-                    .fill(Color.primary.opacity(0.15))
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.12))
                     .frame(height: trackHeight)
 
                 // Filled Track (Active Color Bar)
-                Rectangle()
+                Capsule(style: .continuous)
                     .fill(tint)
                     .frame(width: fillWidth, height: trackHeight)
 
-                // Horizontal Pill / Capsule Thumb Handle
-                Capsule()
-                    .fill(Color(white: 0.92))
+                // Circular Light Mode Knob Handle
+                Circle()
+                    .fill(Color.white)
                     .overlay(
-                        Capsule()
-                            .stroke(isDragging || isHovered ? tint : Color.black.opacity(0.12), lineWidth: 1)
+                        Circle()
+                            .stroke(isDragging || isHovered ? tint : Color.black.opacity(0.18), lineWidth: isDragging ? 1.5 : 1)
                     )
-                    .shadow(color: Color.black.opacity(0.25), radius: 1.5, x: 0, y: 1)
-                    .frame(width: thumbWidth, height: thumbHeight)
+                    .shadow(color: Color.black.opacity(isDragging ? 0.25 : 0.14), radius: isDragging ? 2.5 : 1.5, x: 0, y: 1)
+                    .frame(width: thumbSize, height: thumbSize)
+                    .scaleEffect(isDragging ? 1.15 : (isHovered ? 1.08 : 1.0))
+                    .animation(.easeInOut(duration: 0.12), value: isDragging)
+                    .animation(.easeInOut(duration: 0.12), value: isHovered)
                     .offset(x: thumbX)
             }
-            .frame(height: max(thumbHeight + 4, 16), alignment: .center)
+            .frame(height: max(thumbSize + 4, 18), alignment: .center)
             .contentShape(Rectangle())
             .onHover { hovering in
-                isHovered = hovering
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isHovered = hovering
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         isDragging = true
-                        let locationX = gesture.location.x - (thumbWidth / 2)
+                        let locationX = gesture.location.x - (thumbSize / 2)
                         let newPercent = max(0, min(1, locationX / usableWidth))
                         var newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
                         // Snap to clean 0% or 100% near edges
@@ -1009,7 +1063,7 @@ struct BoxySlider: View {
                     }
             )
         }
-        .frame(height: max(thumbHeight + 4, 16))
+        .frame(height: max(thumbSize + 4, 18))
     }
 }
 
@@ -1028,12 +1082,14 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
+        view.appearance = NSAppearance(named: .aqua)
         return view
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+        nsView.appearance = NSAppearance(named: .aqua)
     }
 }
 

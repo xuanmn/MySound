@@ -37,6 +37,9 @@ struct MySoundApp: App {
     init() {
         print("MySound Starting Up...")
         
+        // Force light mode appearance across the application
+        NSApp.appearance = NSAppearance(named: .aqua)
+
         // 1. Initialize AudioTapManager:
         //    Sets up CoreAudio HAL listeners for process audio events and hardware output device changes.
         _ = AudioTapManager.shared
@@ -57,6 +60,7 @@ struct MySoundApp: App {
         MenuBarExtra("MySound", systemImage: "speaker.wave.2.fill") {
             // Main popover view presenting master volume and per-app sliders
             VolumeControlView()
+                .preferredColorScheme(.light)
                 // Inject shared singleton state into the SwiftUI environment
                 .environmentObject(UpdateManager.shared)
                 .environmentObject(AudioTapManager.shared)

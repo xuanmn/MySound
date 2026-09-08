@@ -629,7 +629,7 @@ struct VolumeControlView: View {
         }
         .frame(width: 330)
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
-        .preferredColorScheme(.light)
+        .preferredColorScheme(.dark)
         // Observe system volume change notifications posted from CoreAudio property listeners
         .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
             if let volume = notification.userInfo?["volume"] as? Double {
@@ -1093,13 +1093,13 @@ struct EditableVolumeText: View {
                 }
                 .padding(.horizontal, 3)
                 .padding(.vertical, 2)
-                .background(Color.white)
+                .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(4)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.blue, lineWidth: 1.2)
                 )
-                .shadow(color: Color.black.opacity(0.12), radius: 1, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(0.25), radius: 1, x: 0, y: 1)
             } else {
                 // Formatted Percentage Readout with Scroll & Click Interceptor
                 HStack(spacing: 0) {
@@ -1111,11 +1111,11 @@ struct EditableVolumeText: View {
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(isHovered ? Color.black.opacity(0.06) : Color.clear)
+                        .fill(isHovered ? Color.white.opacity(0.12) : Color.clear)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(isHovered ? Color.black.opacity(0.12) : Color.clear, lineWidth: 0.5)
+                        .stroke(isHovered ? Color.white.opacity(0.18) : Color.clear, lineWidth: 0.5)
                 )
                 .overlay(
                     ScrollWheelListener(
@@ -1208,14 +1208,14 @@ struct BoxySlider: View {
                     .fill(tint)
                     .frame(width: fillWidth, height: trackHeight)
 
-                // Circular Light Mode Knob Handle
+                // Circular Dark Mode Knob Handle
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color(white: 0.92))
                     .overlay(
                         Circle()
-                            .stroke(isDragging || isHovered ? tint : Color.black.opacity(0.18), lineWidth: isDragging ? 1.5 : 1)
+                            .stroke(isDragging || isHovered ? tint : Color.black.opacity(0.2), lineWidth: isDragging ? 1.5 : 1)
                     )
-                    .shadow(color: Color.black.opacity(isDragging ? 0.25 : 0.14), radius: isDragging ? 2.5 : 1.5, x: 0, y: 1)
+                    .shadow(color: Color.black.opacity(isDragging ? 0.35 : 0.2), radius: isDragging ? 2.5 : 1.5, x: 0, y: 1)
                     .frame(width: thumbSize, height: thumbSize)
                     .scaleEffect(isDragging ? 1.15 : (isHovered ? 1.08 : 1.0))
                     .animation(.easeInOut(duration: 0.12), value: isDragging)
@@ -1268,14 +1268,14 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
-        view.appearance = NSAppearance(named: .aqua)
+        view.appearance = NSAppearance(named: .darkAqua)
         return view
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
-        nsView.appearance = NSAppearance(named: .aqua)
+        nsView.appearance = NSAppearance(named: .darkAqua)
     }
 }
 

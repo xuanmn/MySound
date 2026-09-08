@@ -12,7 +12,7 @@ import AppKit
 class MySoundAppDelegate: NSObject, NSApplicationDelegate {
     /// Called when macOS has initialized the application instance.
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp?.appearance = NSAppearance(named: .aqua)
+        NSApp?.appearance = NSAppearance(named: .darkAqua)
     }
 
     /// Called by macOS when the application is about to terminate (user quit, system shutdown, etc.).
@@ -62,7 +62,7 @@ struct MySoundApp: App {
         MenuBarExtra("MySound", systemImage: "speaker.wave.2.fill") {
             // Main popover view presenting master volume and per-app sliders
             VolumeControlView()
-                .preferredColorScheme(.light)
+                .preferredColorScheme(.dark)
                 // Inject shared singleton state into the SwiftUI environment
                 .environmentObject(UpdateManager.shared)
                 .environmentObject(AudioTapManager.shared)

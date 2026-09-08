@@ -78,8 +78,6 @@ cat <<EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <string>${APP_VERSION}</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSRequiresAquaSystemAppearance</key>
-    <true/>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
     <key>NSMicrophoneUsageDescription</key>

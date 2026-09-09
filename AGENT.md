@@ -2,7 +2,7 @@
 
 ## 1. Tech Stack & Runtimes
 
-- **Language & Runtime:** Swift 5.9+ (compiled natively targeting macOS 14.2+ Sonoma & macOS 15.0+ Sequoia; Universal Binary `arm64` + `x86_64`).
+- **Language & Runtime:** Swift 5.9+ (compiled natively targeting macOS 14.2+ Sonoma & macOS 15.0+ Sequoia; Apple Silicon `arm64`).
 - **Core Frameworks & APIs:**
   - `SwiftUI`: Menu bar popover window interface (`MenuBarExtra` with `.window` style).
   - `AppKit` / `Cocoa`: macOS lifecycle, `NSWorkspace` notifications (app launch/termination), `NSImage` icon caching.
@@ -11,7 +11,7 @@
   - `ServiceManagement`: Native background login item management via `SMAppService`.
   - `Combine` / `Foundation`: Reactive state management (`ObservableObject`, `@Published`), ephemeral `URLSession` for un-cached update checks.
 - **Dependency Management:** Zero external dependencies (no SPM, CocoaPods, or Carthage). All linking is against native macOS system SDK frameworks via `swiftc`.
-- **Build & Distribution Tooling:** Standalone Bash scripts (`build.sh`, `install.sh`) leveraging `swiftc`, `lipo`, `codesign`, `hdiutil`, `zip`, and `xcrun notarytool`.
+- **Build & Distribution Tooling:** Standalone Bash scripts (`build.sh`, `install.sh`) leveraging `swiftc`, `codesign`, `hdiutil`, `zip`, and `xcrun notarytool`.
 
 ---
 
@@ -19,7 +19,7 @@
 
 ### Build & Package
 ```bash
-# Build Universal Binary (arm64 + x86_64), ad-hoc sign, and package DMG + ZIP into build/
+# Build Apple Silicon (arm64) binary, ad-hoc sign, and package DMG + ZIP into build/
 ./build.sh
 
 # Build and sign with an official Apple Developer ID certificate
@@ -60,7 +60,7 @@ MySound/
 ├── .agentignore             # Files/folders excluded from agent context
 ├── Entitlements.plist       # macOS security entitlements (audio capture, audio input, sandbox disabled)
 ├── version.json             # Single source of truth for release versioning and changelog
-├── build.sh                 # Universal compiler, bundler, code signer, and DMG/ZIP packager
+├── build.sh                 # Apple Silicon (arm64) compiler, bundler, code signer, and DMG/ZIP packager
 ├── install.sh               # 1-line curl/bash installer for end-users
 ├── Resources/               # Application icons (.icns, .png) and assets
 └── Sources/

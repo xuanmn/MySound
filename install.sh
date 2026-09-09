@@ -7,6 +7,13 @@ echo "================================================="
 echo "🔊  MySound One-Line Installer"
 echo "================================================="
 
+ARCH=$(uname -m)
+if [ "$ARCH" != "arm64" ]; then
+    echo "❌ Error: MySound requires an Apple Silicon Mac (M1/M2/M3/M4 or newer)."
+    echo "   Detected architecture: ${ARCH}"
+    exit 1
+fi
+
 APP_NAME="MySound"
 INSTALL_DIR="/Applications"
 APP_PATH="${INSTALL_DIR}/${APP_NAME}.app"

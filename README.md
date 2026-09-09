@@ -15,7 +15,7 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.8.0-blue.svg" alt="Version 1.8.0">
   <img src="https://img.shields.io/badge/platform-macOS%2014.2%2B-lightgrey.svg" alt="macOS 14.2+">
-  <img src="https://img.shields.io/badge/architecture-Universal%20(arm64%20%2B%20x86__64)-success.svg" alt="Universal Binary">
+  <img src="https://img.shields.io/badge/architecture-Apple%20Silicon%20(arm64)-success.svg" alt="Apple Silicon">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
 </p>
 
@@ -33,7 +33,7 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 - **Keyboard Shortcuts & Quick Gestures**: Press `⌘Q` to quit, double-click any slider to reset to 100%.
 - **Launch at Login**: Automatic background startup via Apple's native `SMAppService` framework.
 - **Built-in Auto-Updater**: In-app version checks and automated background update downloads.
-- **Standalone DMG Installer**: Fast Universal Binary (`arm64` + `x86_64`) package for instant drag-and-drop installation into `/Applications`.
+- **Standalone DMG Installer**: Fast native Apple Silicon (`arm64`) package for instant drag-and-drop installation into `/Applications`.
 
 ---
 
@@ -41,7 +41,7 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 ### Prerequisites
 - **macOS 14.2 (Sonoma)** or **macOS 15.0+ (Sequoia)**
-- **Apple Silicon** (M1/M2/M3/M4) or **Intel** Mac
+- **Apple Silicon** Mac (M1/M2/M3/M4 or newer)
 
 ### Installation
 
@@ -64,7 +64,7 @@ If installing on a different Mac without an official Apple Developer ID certific
    git clone https://github.com/xuanmn/MySound.git
    cd MySound
    ```
-2. Build the Universal Binary locally:
+2. Build the Apple Silicon binary locally:
    ```bash
    ./build.sh
    ```

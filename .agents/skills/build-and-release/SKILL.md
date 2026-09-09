@@ -1,6 +1,6 @@
 ---
 name: build-and-release
-description: Build universal macOS binaries, sign with entitlements, package DMG & ZIP artifacts, and bump versions for MySound.
+description: Build Apple Silicon (arm64) macOS binaries, sign with entitlements, package DMG & ZIP artifacts, and bump versions for MySound.
 ---
 
 # Build and Release Skill
@@ -28,8 +28,8 @@ When authoring commits and pull requests, use standard prefixes so GitHub's rele
 - `refactor:` or `chore:` → **🛠 Maintenance & Refactoring**
 
 
-### 2. Compile Universal Binary and Package
-Run the build script to compile `arm64` and `x86_64` targets, bundle the app, sign with entitlements, and produce DMG and ZIP installers:
+### 2. Compile Apple Silicon Binary and Package
+Run the build script to compile the native `arm64` target, bundle the app, sign with entitlements, and produce DMG and ZIP installers:
 ```bash
 ./build.sh
 ```
@@ -48,7 +48,8 @@ ls -lh build/MySound.app build/MySound.dmg build/MySound.zip
 # Verify security entitlements (audio capture, audio input, sandbox false)
 codesign -d --entitlements :- build/MySound.app
 
-# Verify Universal Binary architecture
+# Verify Apple Silicon (arm64) architecture
+file build/MySound.app/Contents/MacOS/MySound
 lipo -info build/MySound.app/Contents/MacOS/MySound
 ```
 

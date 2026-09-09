@@ -24,8 +24,9 @@ if [ -n "$SDK_PATH" ]; then
     SDK_FLAGS=(-sdk "$SDK_PATH")
 fi
 
-echo "Compiling Swift files (Apple Silicon arm64)..."
-swiftc -O "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}" \
+echo "Compiling Swift files (Apple Silicon arm64 with WMO & M1 CPU tuning)..."
+swiftc -O -whole-module-optimization -target-cpu apple-m1 "${SDK_FLAGS[@]}" \
+    -o "${MACOS_DIR}/${APP_NAME}" \
     Sources/App.swift \
     Sources/AppLogger.swift \
     Sources/VolumeStore.swift \
@@ -34,6 +35,7 @@ swiftc -O "${SDK_FLAGS[@]}" -o "${MACOS_DIR}/${APP_NAME}" \
     Sources/AudioTapManager.swift \
     Sources/UpdateManager.swift \
     -target arm64-apple-macos14.2
+
 
 
 echo "Creating Info.plist..."

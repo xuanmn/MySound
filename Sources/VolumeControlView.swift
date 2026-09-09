@@ -213,7 +213,6 @@ struct VolumeControlView: View {
     @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
-    @State private var activeAudioPIDs: Set<pid_t> = []
     @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
@@ -523,7 +522,7 @@ struct VolumeControlView: View {
                     if appManager.apps.count <= 6 {
                         VStack(spacing: 3) {
                             ForEach($appManager.apps) { $app in
-                                AppVolumeRow(app: $app, isPlayingAudio: activeAudioPIDs.contains(app.pid)) { newVolume in
+                                AppVolumeRow(app: $app) { newVolume in
                                     tapManager.setVolume(for: app.pid, volume: newVolume)
                                 }
                             }
@@ -535,7 +534,7 @@ struct VolumeControlView: View {
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(spacing: 3) {
                                 ForEach($appManager.apps) { $app in
-                                    AppVolumeRow(app: $app, isPlayingAudio: activeAudioPIDs.contains(app.pid)) { newVolume in
+                                    AppVolumeRow(app: $app) { newVolume in
                                         tapManager.setVolume(for: app.pid, volume: newVolume)
                                     }
                                 }
@@ -662,20 +661,6 @@ struct VolumeControlView: View {
         .frame(width: 330)
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
         .preferredColorScheme(.dark)
-        // Centralized timer for checking audio activity across all apps
-        .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
-            var active: Set<pid_t> = []
-            for app in appManager.apps {
-                if AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2) {
-                    active.insert(app.pid)
-                }
-            }
-            if active != activeAudioPIDs {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    activeAudioPIDs = active
-                }
-            }
-        }
         // Observe system volume change notifications posted from CoreAudio property listeners
         .onReceive(NotificationCenter.default.publisher(for: .mySoundSystemVolumeChanged)) { notification in
             if let volume = notification.userInfo?["volume"] as? Double {
@@ -1033,7 +1018,6 @@ struct OutputDeviceChip: View {
 /// real-time audio activity wave indicator, per-app speaker mute button, custom slider, and percentage readout.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
-    var isPlayingAudio: Bool = false
     var onVolumeChange: (Float) -> Void
     @State private var previousVolume: Double = 0.5
     @State private var isHovered: Bool = false
@@ -1055,16 +1039,8 @@ struct AppVolumeRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.6) : .primary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
                 .help(app.name)
-
-            // Live Audio Activity Waveform (shows when process produces audible sound)
-            Image(systemName: "waveform")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.3) : .blue)
-                .opacity(isPlayingAudio && app.volume > 0.001 ? 0.9 : 0.0)
-                .frame(width: 12)
-                .help(isPlayingAudio ? "\(app.name) is currently playing audio" : "")
 
             // Per-app Speaker Mute Button
             Button(action: {

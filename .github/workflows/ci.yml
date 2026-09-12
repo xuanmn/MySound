@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Select Xcode
         run: |
@@ -49,7 +49,7 @@ jobs:
           codesign -d --entitlements :- build/MySound.app
 
       - name: Upload Build Artifacts (Testing)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: MySound-CI-Build-${{ github.sha }}
           path: |

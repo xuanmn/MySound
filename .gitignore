@@ -56,6 +56,7 @@ ProfileUserData/
 # ==========================================
 build/
 .build/
+Tools/coreaudio-mcp/bin/
 DerivedData/
 *.app/
 *.dSYM/

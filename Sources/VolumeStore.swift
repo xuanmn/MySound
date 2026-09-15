@@ -66,7 +66,7 @@ final class AudioActivityTracker: @unchecked Sendable {
     /// Removes tracking for a terminated process.
     func remove(pid: pid_t) {
         os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         lastActivity.removeValue(forKey: pid)
-        os_unfair_lock_unlock(&_lock)
     }
 }

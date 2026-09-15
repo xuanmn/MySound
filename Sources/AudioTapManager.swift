@@ -615,9 +615,10 @@ class AudioTapManager: NSObject, ObservableObject {
         _ = AudioHardwareDestroyAggregateDevice(state.aggregateID)
         _ = AudioHardwareDestroyProcessTap(state.tapID)
         
-        // Remove all dictionary references pointing to this tap instance
+        // Remove all dictionary references pointing to this tap instance safely without mutating during iteration
         let tapID = state.tapID
-        for (key, value) in activeTaps where value.tapID == tapID {
+        let keysToRemove = activeTaps.filter { $0.value.tapID == tapID }.map(\.key)
+        for key in keysToRemove {
             Self.activityTracker.remove(pid: key)
             volumeStore.remove(key)
             activeTaps.removeValue(forKey: key)

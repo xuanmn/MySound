@@ -213,7 +213,8 @@ class UpdateManager: ObservableObject {
         downloadProgress = 0.0
         updateStatus = "Downloading update..."
 
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             // Create the download session outside the do block so it can be invalidated in all paths
             let delegate = DownloadProgressDelegate { [weak self] progress in
                 Task { @MainActor [weak self] in

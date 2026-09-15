@@ -110,7 +110,11 @@ rm -rf "$DMG_STAGE" "${BUILD_DIR}/${APP_NAME}.dmg"
 mkdir -p "$DMG_STAGE"
 cp -R "${APP_BUNDLE}" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "${APP_NAME}" -srcfolder "$DMG_STAGE" -ov -format UDZO "${BUILD_DIR}/${APP_NAME}.dmg" > /dev/null
+if diskutil image create from --help &>/dev/null; then
+    diskutil image create from --format UDZO --volumeName "${APP_NAME}" "$DMG_STAGE" "${BUILD_DIR}/${APP_NAME}.dmg" > /dev/null
+else
+    hdiutil create -volname "${APP_NAME}" -srcfolder "$DMG_STAGE" -ov -format UDZO "${BUILD_DIR}/${APP_NAME}.dmg" > /dev/null
+fi
 rm -rf "$DMG_STAGE"
 
 if [ "$SIGNING_IDENTITY" != "-" ]; then

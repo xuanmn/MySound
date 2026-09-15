@@ -11,6 +11,9 @@ import Foundation
 /// - It must never perform Swift actor calls, dispatch queue syncs, or allocate memory.
 /// - `os_unfair_lock` provides low-overhead, spin-free locking safe for quick scalar lookups in the audio thread.
 final class VolumeStore: @unchecked Sendable {
+    /// Shared singleton instance backed by standard UserDefaults.
+    static let shared = VolumeStore()
+
     private var _lock = os_unfair_lock_s()
     private var volumes: [pid_t: Float] = [:]
 

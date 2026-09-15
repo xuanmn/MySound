@@ -25,6 +25,8 @@ struct AppVolume: Identifiable {
     let pid: pid_t
     /// Localized display name (e.g. "Spotify", "Google Chrome").
     let name: String
+    /// Application bundle identifier for persistent settings (e.g. "com.spotify.client").
+    let bundleIdentifier: String?
     /// Cached application icon image.
     let icon: NSImage
     /// Current volume scalar for this application (0.0...1.0).
@@ -105,9 +107,9 @@ class AppManager: ObservableObject {
                     self.apps = newApps
                 }
 
-                // Ensure taps exist for all active apps
+                // Ensure taps exist for all active apps with restored volume
                 for app in newApps {
-                    AudioTapManager.shared.ensureTapCreated(for: app.pid)
+                    AudioTapManager.shared.ensureTapCreated(for: app.pid, initialVolume: Float(app.volume))
                 }
             }
         }
@@ -153,14 +155,22 @@ class AppManager: ObservableObject {
             return isRegular && isActive
         }
 
-        // Step 3: Construct AppVolume models preserving prior volume adjustments
+        // Step 3: Construct AppVolume models preserving prior volume adjustments or persistent preferences
         var newApps: [AppVolume] = []
         for app in runningApps {
             guard let name = app.localizedName,
                   let icon = cachedIcon(for: app) else { continue }
 
-            let existingVolume = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume ?? 1.0
-            newApps.append(AppVolume(pid: app.processIdentifier, name: name, icon: icon, volume: existingVolume))
+            let bundleID = app.bundleIdentifier
+            let existingVolume: Double
+            if let prior = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume {
+                existingVolume = prior
+            } else if let bID = bundleID, let saved = AudioTapManager.shared.volumeStore.getPersistentVolume(for: bID) {
+                existingVolume = saved
+            } else {
+                existingVolume = 1.0
+            }
+            newApps.append(AppVolume(pid: app.processIdentifier, name: name, bundleIdentifier: bundleID, icon: icon, volume: existingVolume))
         }
 
         // Return alphabetically sorted list
@@ -236,10 +246,13 @@ struct VolumeControlView: View {
     /// Toggles all applications between muted (0%) and their previously saved volumes.
     private func toggleMuteAll() {
         if isAllMuted {
-            // Unmute: Restore previous volume or default to 100%
+            // Unmute: Restore previous volume or persistent default
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
-                let restored = savedAppVolumes[pid] ?? 1.0
+                let bundleID = appManager.apps[i].bundleIdentifier
+                let restored = savedAppVolumes[pid]
+                    ?? (bundleID.flatMap { tapManager.volumeStore.getPersistentVolume(for: $0) })
+                    ?? 1.0
                 appManager.apps[i].volume = restored > 0.001 ? restored : 1.0
                 tapManager.setVolume(for: pid, volume: Float(appManager.apps[i].volume))
             }
@@ -524,6 +537,9 @@ struct VolumeControlView: View {
                             ForEach($appManager.apps) { $app in
                                 AppVolumeRow(app: $app) { newVolume in
                                     tapManager.setVolume(for: app.pid, volume: newVolume)
+                                    if let bundleID = app.bundleIdentifier {
+                                        tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
+                                    }
                                 }
                             }
                         }
@@ -536,6 +552,9 @@ struct VolumeControlView: View {
                                 ForEach($appManager.apps) { $app in
                                     AppVolumeRow(app: $app) { newVolume in
                                         tapManager.setVolume(for: app.pid, volume: newVolume)
+                                        if let bundleID = app.bundleIdentifier {
+                                            tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
+                                        }
                                     }
                                 }
                             }
@@ -1011,6 +1030,36 @@ struct OutputDeviceChip: View {
 }
 
 // =============================================================================
+// MARK: - Live Audio Activity Indicator Component
+// =============================================================================
+
+/// `LiveAudioIndicator` renders a subtle 3-bar animated audio equalizer
+/// that pulses in real-time when the application is actively producing sound.
+struct LiveAudioIndicator: View {
+    let pid: pid_t
+    let isMuted: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.25)) { timeline in
+            let isActive = !isMuted && AudioTapManager.activityTracker.isAudioActive(for: pid, window: 1.2)
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .bottom, spacing: 1.5) {
+                bar(height: isActive ? 3.0 + 5.0 * CGFloat((sin(time * 8.0) + 1.0) / 2.0) : 2.5, isActive: isActive)
+                bar(height: isActive ? 4.0 + 7.0 * CGFloat((sin(time * 9.5 + 1.2) + 1.0) / 2.0) : 2.5, isActive: isActive)
+                bar(height: isActive ? 3.0 + 4.5 * CGFloat((sin(time * 7.2 + 2.4) + 1.0) / 2.0) : 2.5, isActive: isActive)
+            }
+            .frame(width: 8.5, height: 12, alignment: .bottom)
+        }
+    }
+
+    private func bar(height: CGFloat, isActive: Bool) -> some View {
+        Capsule()
+            .fill(isActive ? Color.blue : Color.secondary.opacity(0.18))
+            .frame(width: 1.8, height: max(2.0, height))
+    }
+}
+
+// =============================================================================
 // MARK: - App Volume Row
 // =============================================================================
 
@@ -1023,7 +1072,7 @@ struct AppVolumeRow: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4.5) {
             // Application Icon with Native Tooltip
             Image(nsImage: app.icon)
                 .resizable()
@@ -1033,13 +1082,16 @@ struct AppVolumeRow: View {
                 .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
                 .help(app.name)
 
+            // Live CoreAudio Activity Indicator
+            LiveAudioIndicator(pid: app.pid, isMuted: app.volume <= 0.001)
+
             // Localized Application Name (fixed width ensures uniform slider alignment)
             Text(app.name)
                 .font(.system(size: 11.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.6) : .primary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: 80, alignment: .leading)
                 .help(app.name)
 
             // Per-app Speaker Mute Button

@@ -336,9 +336,13 @@ class AudioTapManager: NSObject, ObservableObject {
 
     // MARK: - Tap & Volume Management
 
-    /// Ensures a tap is created for a given PID if not already established.
-    func ensureTapCreated(for targetPID: pid_t) {
+    /// Ensures a tap is created for a given PID if not already established, optionally applying an initial volume.
+    func ensureTapCreated(for targetPID: pid_t, initialVolume: Float? = nil) {
         let pid = getMainAppPID(for: targetPID)
+        if let initialVolume = initialVolume {
+            volumeStore.set(pid, initialVolume)
+            volumeStore.set(targetPID, initialVolume)
+        }
         if activeTaps[pid] == nil && activeTaps[targetPID] == nil {
             createTap(for: targetPID)
         }

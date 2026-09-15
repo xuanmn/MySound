@@ -1030,41 +1030,11 @@ struct OutputDeviceChip: View {
 }
 
 // =============================================================================
-// MARK: - Live Audio Activity Indicator Component
-// =============================================================================
-
-/// `LiveAudioIndicator` renders a subtle 3-bar animated audio equalizer
-/// that pulses in real-time when the application is actively producing sound.
-struct LiveAudioIndicator: View {
-    let pid: pid_t
-    let isMuted: Bool
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 0.25)) { timeline in
-            let isActive = !isMuted && AudioTapManager.activityTracker.isAudioActive(for: pid, window: 1.2)
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .bottom, spacing: 1.5) {
-                bar(height: isActive ? 3.0 + 5.0 * CGFloat((sin(time * 8.0) + 1.0) / 2.0) : 2.5, isActive: isActive)
-                bar(height: isActive ? 4.0 + 7.0 * CGFloat((sin(time * 9.5 + 1.2) + 1.0) / 2.0) : 2.5, isActive: isActive)
-                bar(height: isActive ? 3.0 + 4.5 * CGFloat((sin(time * 7.2 + 2.4) + 1.0) / 2.0) : 2.5, isActive: isActive)
-            }
-            .frame(width: 8.5, height: 12, alignment: .bottom)
-        }
-    }
-
-    private func bar(height: CGFloat, isActive: Bool) -> some View {
-        Capsule()
-            .fill(isActive ? Color.blue : Color.secondary.opacity(0.18))
-            .frame(width: 1.8, height: max(2.0, height))
-    }
-}
-
-// =============================================================================
 // MARK: - App Volume Row
 // =============================================================================
 
 /// `AppVolumeRow` renders a polished 1-line application row with its icon, localized app name,
-/// real-time audio activity wave indicator, per-app speaker mute button, custom slider, and percentage readout.
+/// per-app speaker mute button, dynamic state-responsive custom slider, and percentage readout.
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
@@ -1072,98 +1042,118 @@ struct AppVolumeRow: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        HStack(spacing: 4.5) {
-            // Application Icon with Native Tooltip
-            Image(nsImage: app.icon)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 18, height: 18)
-                .cornerRadius(3)
-                .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
-                .help(app.name)
+        TimelineView(.animation(minimumInterval: 0.35)) { _ in
+            let isActive = app.volume > 0.001 && AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2)
+            let sliderTint: Color = {
+                if app.volume <= 0.001 {
+                    return Color.gray.opacity(0.3)
+                } else if isActive {
+                    return Color.blue
+                } else {
+                    return Color.secondary.opacity(0.35)
+                }
+            }()
+            let speakerColor: Color = {
+                if app.volume <= 0.001 {
+                    return .red
+                } else if isActive {
+                    return .blue
+                } else {
+                    return .secondary
+                }
+            }()
 
-            // Live CoreAudio Activity Indicator
-            LiveAudioIndicator(pid: app.pid, isMuted: app.volume <= 0.001)
+            HStack(spacing: 5) {
+                // Application Icon with Native Tooltip
+                Image(nsImage: app.icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 18, height: 18)
+                    .cornerRadius(3)
+                    .opacity(app.volume <= 0.001 ? 0.4 : 1.0)
+                    .help(app.name)
 
-            // Localized Application Name (fixed width ensures uniform slider alignment)
-            Text(app.name)
-                .font(.system(size: 11.5, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.6) : .primary)
-                .frame(width: 80, alignment: .leading)
-                .help(app.name)
+                // Localized Application Name (full width without truncation)
+                Text(app.name)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundColor(app.volume <= 0.001 ? .secondary.opacity(0.6) : (isActive ? .primary : .primary.opacity(0.85)))
+                    .frame(width: 94, alignment: .leading)
+                    .help(app.name)
 
-            // Per-app Speaker Mute Button
-            Button(action: {
+                // Per-app Speaker Mute Button
+                Button(action: {
+                    if app.volume > 0.001 {
+                        previousVolume = app.volume
+                        app.volume = 0
+                    } else {
+                        app.volume = previousVolume > 0.001 ? previousVolume : 0.5
+                    }
+                    onVolumeChange(Float(app.volume))
+                }) {
+                    Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundColor(speakerColor)
+                        .font(.system(size: 11))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
+
+                // Custom Application Volume Slider with Dynamic Accent Tint
+                BoxySlider(value: $app.volume, range: 0...1, tint: sliderTint)
+                    .accessibilityLabel("\(app.name) volume")
+                    .accessibilityValue("\(Int(app.volume * 100)) percent")
+                    .accessibilityAdjustableAction { direction in
+                        switch direction {
+                        case .increment:
+                            app.volume = min(app.volume + 0.05, 1.0)
+                        case .decrement:
+                            app.volume = max(app.volume - 0.05, 0.0)
+                        @unknown default:
+                            break
+                        }
+                    }
+                    .onChange(of: app.volume) { _, newValue in
+                        if newValue > 0.001 {
+                            previousVolume = newValue
+                        }
+                        onVolumeChange(Float(newValue))
+                    }
+                    // Double-click to set application volume to 100%
+                    .onTapGesture(count: 2) {
+                        app.volume = 1.0
+                        onVolumeChange(1.0)
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: isActive)
+
+                // Editable percentage readout (click-to-type & hover scroll)
+                EditableVolumeText(
+                    volume: $app.volume,
+                    onVolumeChange: { newVol in
+                        if newVol > 0.001 {
+                            previousVolume = newVol
+                        }
+                        onVolumeChange(Float(newVol))
+                    },
+                    isMuted: app.volume <= 0.001
+                )
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
+            .cornerRadius(6)
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isHovered = hovering
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: app.volume <= 0.001)
+            .onAppear {
                 if app.volume > 0.001 {
                     previousVolume = app.volume
-                    app.volume = 0
-                } else {
-                    app.volume = previousVolume > 0.001 ? previousVolume : 0.5
                 }
-                onVolumeChange(Float(app.volume))
-            }) {
-                Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .foregroundColor(app.volume <= 0.001 ? .red : .secondary)
-                    .font(.system(size: 11))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
-
-            // Custom Application Volume Slider
-            BoxySlider(value: $app.volume, range: 0...1, tint: app.volume <= 0.001 ? .gray.opacity(0.4) : .blue)
-                .accessibilityLabel("\(app.name) volume")
-                .accessibilityValue("\(Int(app.volume * 100)) percent")
-                .accessibilityAdjustableAction { direction in
-                    switch direction {
-                    case .increment:
-                        app.volume = min(app.volume + 0.05, 1.0)
-                    case .decrement:
-                        app.volume = max(app.volume - 0.05, 0.0)
-                    @unknown default:
-                        break
-                    }
-                }
-                .onChange(of: app.volume) { _, newValue in
-                    if newValue > 0.001 {
-                        previousVolume = newValue
-                    }
-                    onVolumeChange(Float(newValue))
-                }
-                // Double-click to set application volume to 100%
-                .onTapGesture(count: 2) {
-                    app.volume = 1.0
-                    onVolumeChange(1.0)
-                }
-
-            // Editable percentage readout (click-to-type & hover scroll)
-            EditableVolumeText(
-                volume: $app.volume,
-                onVolumeChange: { newVol in
-                    if newVol > 0.001 {
-                        previousVolume = newVol
-                    }
-                    onVolumeChange(Float(newVol))
-                },
-                isMuted: app.volume <= 0.001
-            )
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
-        .cornerRadius(6)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) {
-                isHovered = hovering
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: app.volume <= 0.001)
-        .onAppear {
-            if app.volume > 0.001 {
-                previousVolume = app.volume
             }
         }
     }

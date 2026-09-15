@@ -90,7 +90,7 @@ class AudioTapManager: NSObject, ObservableObject {
     }()
 
     /// Lock-protected volume lookup table shared with real-time audio threads.
-    let volumeStore = VolumeStore()
+    let volumeStore = VolumeStore.shared
     /// Lock-protected activity tracker for visual audio waveform indicators.
     nonisolated static let activityTracker = AudioActivityTracker()
 

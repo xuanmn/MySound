@@ -165,7 +165,7 @@ class AppManager: ObservableObject {
             let existingVolume: Double
             if let prior = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume {
                 existingVolume = prior
-            } else if let bID = bundleID, let saved = AudioTapManager.shared.volumeStore.getPersistentVolume(for: bID) {
+            } else if let bID = bundleID, let saved = VolumeStore.shared.getPersistentVolume(for: bID) {
                 existingVolume = saved
             } else {
                 existingVolume = 1.0

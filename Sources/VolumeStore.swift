@@ -14,6 +14,13 @@ final class VolumeStore: @unchecked Sendable {
     private var _lock = os_unfair_lock_s()
     private var volumes: [pid_t: Float] = [:]
 
+    private static let userDefaultsKey = "MySound_SavedAppVolumes"
+    private let userDefaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
+
     /// Retrieves the volume for a given PID. Defaults to 1.0 (100%) if not explicitly set.
     func get(_ pid: pid_t) -> Float {
         os_unfair_lock_lock(&_lock)
@@ -33,6 +40,27 @@ final class VolumeStore: @unchecked Sendable {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
         volumes.removeValue(forKey: pid)
+    }
+
+    // MARK: - Persistent App Volume Storage
+
+    /// Retrieves the saved persistent volume scalar (0.0...1.0) for a given bundle identifier.
+    /// Defaults to nil if no preference was previously saved.
+    func getPersistentVolume(for bundleID: String) -> Double? {
+        guard let dict = userDefaults.dictionary(forKey: Self.userDefaultsKey) else { return nil }
+        if let val = dict[bundleID] as? Double {
+            return val
+        } else if let num = dict[bundleID] as? NSNumber {
+            return num.doubleValue
+        }
+        return nil
+    }
+
+    /// Saves the persistent volume scalar (0.0...1.0) for a given bundle identifier in UserDefaults.
+    func setPersistentVolume(for bundleID: String, volume: Double) {
+        var dict = userDefaults.dictionary(forKey: Self.userDefaultsKey) ?? [:]
+        dict[bundleID] = volume
+        userDefaults.set(dict, forKey: Self.userDefaultsKey)
     }
 }
 

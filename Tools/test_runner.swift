@@ -46,12 +46,31 @@ func testAudioActivityTrackerLocking() {
     print("  ✅ Passed testAudioActivityTrackerLocking")
 }
 
+func testVolumeStorePersistence() {
+    print("[TEST] testVolumeStorePersistence...")
+    let testSuite = "com.xuanmn.mysound.test.\(UUID().uuidString)"
+    let testDefaults = UserDefaults(suiteName: testSuite)!
+    let store1 = VolumeStore(userDefaults: testDefaults)
+
+    assert(store1.getPersistentVolume(for: "com.spotify.client") == nil, "Initial persistent volume should be nil")
+
+    store1.setPersistentVolume(for: "com.spotify.client", volume: 0.65)
+    assert(abs((store1.getPersistentVolume(for: "com.spotify.client") ?? 0) - 0.65) < 0.001, "Stored persistent volume should be 0.65")
+
+    // Create a new store instance with same defaults to verify cross-instance persistence
+    let store2 = VolumeStore(userDefaults: testDefaults)
+    assert(abs((store2.getPersistentVolume(for: "com.spotify.client") ?? 0) - 0.65) < 0.001, "Separate store instance should read persisted 0.65")
+    testDefaults.removePersistentDomain(forName: testSuite)
+    print("  ✅ Passed testVolumeStorePersistence")
+}
+
 @main
 struct TestRunner {
     static func main() {
         testDictionaryCleanupSafety()
         testVolumeStoreLocking()
         testAudioActivityTrackerLocking()
+        testVolumeStorePersistence()
         print("\nAll unit tests passed successfully!")
     }
 }

@@ -41,6 +41,12 @@ killall MySound 2>/dev/null || true
 ./install.sh
 ```
 
+### Testing & Verification
+```bash
+# Run unit test suite
+swiftc -O -o build/test_runner Sources/VolumeStore.swift Tools/test_runner.swift && ./build/test_runner
+```
+
 ### Debugging & Diagnostics
 ```bash
 # Stream live application and CoreAudio HAL diagnostic logs

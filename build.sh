@@ -24,6 +24,12 @@ if [ -n "$SDK_PATH" ]; then
     SDK_FLAGS=(-sdk "$SDK_PATH")
 fi
 
+if [ -f "Tools/test_runner.swift" ]; then
+    echo "Running unit tests..."
+    swiftc -O "${SDK_FLAGS[@]}" -o "${BUILD_DIR}/test_runner" Sources/VolumeStore.swift Tools/test_runner.swift -target arm64-apple-macos14.2
+    "${BUILD_DIR}/test_runner"
+fi
+
 echo "Compiling Swift files (Apple Silicon arm64 with WMO & M1 CPU tuning)..."
 swiftc -O -whole-module-optimization -target-cpu apple-m1 "${SDK_FLAGS[@]}" \
     -o "${MACOS_DIR}/${APP_NAME}" \

@@ -789,10 +789,10 @@ struct VolumeControlView: View {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 3. Check for Updates...
+        // 3. Check for Updates
         let symConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
         let updateItem = NSMenuItem(
-            title: updateManager.isChecking ? "Checking for Updates..." : "Check for Updates...",
+            title: updateManager.isChecking ? "Checking for Updates..." : "Check for Updates",
             action: #selector(SettingsMenuCoordinator.checkUpdates),
             keyEquivalent: ""
         )

@@ -87,7 +87,7 @@ If installing on a different Mac without an official Apple Developer ID certific
 | **Double-Click Slider** | Instantly resets master or app volume directly to 100%. |
 | **Per-App Mixer Rows** | Single-line compact controls with application icon tooltip, dedicated mute toggle, custom slider, and percentage readout. |
 | `⌘Q` | Keyboard shortcut to immediately quit MySound when window is focused. |
-| **Gear Menu (⚙️)** | Toggle **Launch at Login** or manually trigger **Check for Updates...**. |
+| **Gear Menu (⚙️)** | Toggle **Launch at Login** or manually trigger **Check for Updates**. |
 
 ---
 

@@ -113,25 +113,26 @@ final class AudioActivityTracker: @unchecked Sendable {
 /// Writers are the main thread only; the RT thread only reads `gain` and writes `lastReportTicks`.
 final class TapControl: @unchecked Sendable {
     private let gainBits = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
-    private let lastReportTicks = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)
+    private let lastActiveTicks = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)
 
-    /// Minimum interval between activity reports from the RT thread (~250 ms), in mach ticks.
-    private static let reportIntervalTicks: UInt64 = {
+    private static let timebase: mach_timebase_info_data_t = {
         var tb = mach_timebase_info_data_t()
         mach_timebase_info(&tb)
-        return 250_000_000 * UInt64(tb.denom) / UInt64(tb.numer)
+        return tb
     }()
 
     init(gain: Float) {
         gainBits.initialize(to: gain.bitPattern)
-        lastReportTicks.initialize(to: 0)
+        lastActiveTicks.initialize(to: 0)
         // Resolve the lazy static here (main thread) so the RT thread never hits dispatch_once.
-        _ = Self.reportIntervalTicks
+        _ = Self.timebase
     }
 
     deinit {
+        gainBits.deinitialize(count: 1)
         gainBits.deallocate()
-        lastReportTicks.deallocate()
+        lastActiveTicks.deinitialize(count: 1)
+        lastActiveTicks.deallocate()
     }
 
     /// Current linear gain (0.0...1.0). Safe to read from the RT thread.
@@ -140,16 +141,24 @@ final class TapControl: @unchecked Sendable {
         set { gainBits.pointee = newValue.bitPattern }
     }
 
-    /// Returns true at most once per report interval, so the RT thread only takes the
-    /// activity-tracker lock a few times per second instead of on every buffer.
+    /// Records that the tapped process produced audible sound right now.
+    /// Safe to call from the real-time audio thread: single atomic store, zero locks, zero allocations.
     @inline(__always)
-    func shouldReportActivity() -> Bool {
+    func recordActivity() {
+        lastActiveTicks.pointee = mach_absolute_time()
+    }
+
+    /// Checks if the process produced audio within the specified time window (in seconds).
+    func isAudioActive(window: TimeInterval) -> Bool {
+        let last = lastActiveTicks.pointee
+        guard last > 0 else { return false }
         let now = mach_absolute_time()
-        if now &- lastReportTicks.pointee >= Self.reportIntervalTicks {
-            lastReportTicks.pointee = now
-            return true
-        }
-        return false
+        guard now >= last else { return false }
+        let elapsedTicks = now - last
+        let elapsedNs = elapsedTicks * UInt64(Self.timebase.numer) / UInt64(Self.timebase.denom)
+        let windowNs = UInt64(window * 1_000_000_000)
+        return elapsedNs <= windowNs
     }
 }
+
 

@@ -51,8 +51,8 @@ class AppManager: ObservableObject {
     /// re-render on actual state transitions rather than on a per-row timer.
     @Published var activePIDs: Set<pid_t> = []
 
-    /// Polling timer to detect when apps start or stop playing audio.
-    private var timer: Timer?
+    /// Optional refresh timer active ONLY while the popover window is open to animate live waveform states.
+    private var visibleTimer: Timer?
 
     init() {
         // Defer initial app discovery to an async task on the main actor to avoid
@@ -76,37 +76,31 @@ class AppManager: ObservableObject {
             object: nil
         )
 
-        // Periodically refresh to catch audio playback start/stop events.
-        // Fast while the popover is visible, slow while hidden (see setPopoverVisible).
-        scheduleTimer(interval: hiddenPollInterval)
-    }
-
-    /// Poll interval while the popover is open (responsive UI).
-    private let visiblePollInterval: TimeInterval = 1.5
-    /// Poll interval while the popover is closed (only needed to apply saved volumes to newly playing apps).
-    private let hiddenPollInterval: TimeInterval = 5.0
-
-    private func scheduleTimer(interval: TimeInterval) {
-        timer?.invalidate()
-        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.updateApps()
-            }
+        // Event-driven HAL notifications: listen for when processes start/stop audio output ('piro')
+        AudioTapManager.shared.onProcessAudioStateChanged = { [weak self] in
+            self?.updateApps()
         }
-        // Allow macOS to coalesce wakeups with other timers to save power.
-        t.tolerance = interval * 0.3
-        timer = t
     }
 
-    /// Switches polling cadence based on whether the mixer UI is visible.
+    /// Activates a light timer only while the popover is open to refresh live waveform states.
+    /// When popover is closed, all periodic timers are stopped (zero idle CPU wakeups).
     func setPopoverVisible(_ visible: Bool) {
-        scheduleTimer(interval: visible ? visiblePollInterval : hiddenPollInterval)
+        visibleTimer?.invalidate()
+        visibleTimer = nil
+        if visible {
+            updateApps()
+            let t = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.updateApps()
+                }
+            }
+            t.tolerance = 0.5
+            visibleTimer = t
+        }
     }
 
     deinit {
-        // Invalidate timer to prevent execution after deallocation
-        timer?.invalidate()
-        // Remove NSWorkspace notification observers
+        visibleTimer?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
@@ -131,7 +125,7 @@ class AppManager: ObservableObject {
                 }
 
                 let newActive = Set(newApps.lazy
-                    .filter { AudioTapManager.activityTracker.isAudioActive(for: $0.pid, window: 1.2) }
+                    .filter { AudioTapManager.shared.isAudioActive(for: $0.pid, window: 1.2) }
                     .map(\.pid))
                 if newActive != self.activePIDs {
                     self.activePIDs = newActive
@@ -145,7 +139,8 @@ class AppManager: ObservableObject {
             }
         }
         pendingUpdate = workItem
-        DispatchQueue.global(qos: .utility).async(execute: workItem)
+        // 50ms debounce prevents storm of updates if multiple HAL processes notify simultaneously
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05, execute: workItem)
     }
 
     // -------------------------------------------------------------------------

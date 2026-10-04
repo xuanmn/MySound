@@ -146,6 +146,13 @@ class AudioTapManager: NSObject, ObservableObject {
     private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
     private var hardwareDevicesListenerBlock: AudioObjectPropertyListenerBlock?
 
+    /// Active process AudioObjectIDs currently monitored for output state changes ('piro').
+    private var monitoredProcessIDs: Set<AudioObjectID> = []
+    private var processOutputListenerBlock: AudioObjectPropertyListenerBlock?
+
+    /// Callback invoked when any application starts or stops producing sound.
+    var onProcessAudioStateChanged: (@MainActor () -> Void)?
+
     private var cleanupTimer: Timer?
 
     override init() {
@@ -178,7 +185,7 @@ class AudioTapManager: NSObject, ObservableObject {
         }
     }
 
-    /// Evaluates active taps and tears down any whose apps are closed or inactive.
+    /// Evaluates active taps and tears down any whose apps are closed, inactive, or restored to 100% volume.
     func cleanupInactiveTaps() {
         let now = CFAbsoluteTimeGetCurrent()
         var seenTapIDs = Set<AudioObjectID>()
@@ -193,9 +200,19 @@ class AudioTapManager: NSObject, ObservableObject {
             let age = now - state.createdAt
             if age < 5.0 { continue }
             
-            let isRunning = NSRunningApplication(processIdentifier: pid) != nil
-            let isActive = Self.activityTracker.isAudioActive(for: pid, window: idleTapTeardownWindow)
-            if !isRunning || !isActive {
+            let mainPID = getMainAppPID(for: pid)
+            let isAppRunning = NSRunningApplication(processIdentifier: mainPID) != nil || (kill(mainPID, 0) == 0 || errno == EPERM)
+            let isProcessAlive = (kill(pid, 0) == 0 || errno == EPERM)
+            let isRunning = isAppRunning && isProcessAlive
+            
+            let isAudioActive = state.control.isAudioActive(window: idleTapTeardownWindow) ||
+                                Self.activityTracker.isAudioActive(for: pid, window: idleTapTeardownWindow) ||
+                                Self.activityTracker.isAudioActive(for: mainPID, window: idleTapTeardownWindow)
+            
+            // Return to native un-tapped hardware output if the user restored volume to 100%
+            let isAtUnity = volumeStore.get(mainPID) >= 0.999 && volumeStore.get(pid) >= 0.999
+            
+            if !isRunning || !isAudioActive || isAtUnity {
                 removeTap(for: pid)
             }
         }
@@ -239,12 +256,64 @@ class AudioTapManager: NSObject, ObservableObject {
         // Store block reference so deinit can unregister the exact same pointer
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor [weak self] in
-                self?.refreshActiveTaps()
+                guard let self = self else { return }
+                self.syncMonitoredProcessObjects()
+                self.refreshActiveTaps()
+                self.onProcessAudioStateChanged?()
             }
         }
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
         processListListenerAddress = address
         processListListenerBlock = block
+
+        syncMonitoredProcessObjects()
+    }
+
+    /// Synchronizes listeners for 'piro' (running output) on all CoreAudio HAL process objects.
+    private func syncMonitoredProcessObjects() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr, size > 0 else { return }
+        let count = Int(size) / MemoryLayout<AudioObjectID>.size
+        var currentProcessIDs = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &currentProcessIDs) == noErr else { return }
+
+        let currentSet = Set(currentProcessIDs)
+        let newlyAdded = currentSet.subtracting(monitoredProcessIDs)
+        let removed = monitoredProcessIDs.subtracting(currentSet)
+
+        var piroAddr = AudioObjectPropertyAddress(
+            mSelector: AudioObjectPropertySelector(0x7069726f), // 'piro' -> kAudioProcessPropertyIsRunningOutput
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        if processOutputListenerBlock == nil {
+            processOutputListenerBlock = { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    self?.onProcessAudioStateChanged?()
+                }
+            }
+        }
+
+        guard let block = processOutputListenerBlock else { return }
+
+        // Remove listeners from defunct process objects
+        for id in removed {
+            AudioObjectRemovePropertyListenerBlock(id, &piroAddr, DispatchQueue.main, block)
+            monitoredProcessIDs.remove(id)
+        }
+
+        // Add listeners to new process objects
+        for id in newlyAdded {
+            if AudioObjectAddPropertyListenerBlock(id, &piroAddr, DispatchQueue.main, block) == noErr {
+                monitoredProcessIDs.insert(id)
+            }
+        }
     }
 
     /// Registers listeners for default output device changes and hardware device plug/unplug events.
@@ -608,9 +677,8 @@ class AudioTapManager: NSObject, ObservableObject {
                     }
                 }
             }
-            if hasActiveAudio && control.shouldReportActivity() {
-                AudioTapManager.activityTracker.recordActivity(for: pid)
-                AudioTapManager.activityTracker.recordActivity(for: targetPID)
+            if hasActiveAudio {
+                control.recordActivity()
             }
         }
 
@@ -621,6 +689,7 @@ class AudioTapManager: NSObject, ObservableObject {
             activeTaps[targetPID] = tapState
             
             // Record activity immediately so the cleanup timer does not prematurely destroy the tap
+            control.recordActivity()
             Self.activityTracker.recordActivity(for: pid)
             Self.activityTracker.recordActivity(for: targetPID)
             
@@ -671,6 +740,17 @@ class AudioTapManager: NSObject, ObservableObject {
 
     deinit {
         cleanupTimer?.invalidate()
+        if let block = processOutputListenerBlock {
+            var piroAddr = AudioObjectPropertyAddress(
+                mSelector: AudioObjectPropertySelector(0x7069726f),
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            for id in monitoredProcessIDs {
+                AudioObjectRemovePropertyListenerBlock(id, &piroAddr, DispatchQueue.main, block)
+            }
+            monitoredProcessIDs.removeAll()
+        }
         // Unregister CoreAudio property listener blocks using stored block references
         if var addr = processListListenerAddress, let block = processListListenerBlock {
             AudioObjectRemovePropertyListenerBlock(
@@ -699,6 +779,17 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     // MARK: - Output Device Helpers
+
+    /// Checks if a given application or process produced audio recently.
+    /// Prefers the lock-free TapControl if a tap is active, falling back to the tracker.
+    func isAudioActive(for targetPID: pid_t, window: TimeInterval = 1.2) -> Bool {
+        let mainPID = getMainAppPID(for: targetPID)
+        if let tap = activeTaps[mainPID] ?? activeTaps[targetPID] {
+            return tap.control.isAudioActive(window: window)
+        }
+        return Self.activityTracker.isAudioActive(for: targetPID, window: window) ||
+               Self.activityTracker.isAudioActive(for: mainPID, window: window)
+    }
 
     /// Queries the CoreAudio HAL for all available output devices, filtering out MySound virtual tap devices.
     func getAvailableOutputDevices() -> [AudioOutputDevice] {

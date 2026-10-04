@@ -64,6 +64,19 @@ func testVolumeStorePersistence() {
     print("  ✅ Passed testVolumeStorePersistence")
 }
 
+func testTapControl() {
+    print("[TEST] testTapControl...")
+    let control = TapControl(gain: 0.42)
+    assert(abs(control.gain - 0.42) < 0.001, "Initial gain should match 0.42")
+    control.gain = 0.85
+    assert(abs(control.gain - 0.85) < 0.001, "Updated gain should match 0.85")
+
+    assert(!control.isAudioActive(window: 1.0), "Should not be active before recording")
+    control.recordActivity()
+    assert(control.isAudioActive(window: 1.0), "Should be active immediately after recording")
+    print("  ✅ Passed testTapControl")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -71,6 +84,8 @@ struct TestRunner {
         testVolumeStoreLocking()
         testAudioActivityTrackerLocking()
         testVolumeStorePersistence()
+        testTapControl()
         print("\nAll unit tests passed successfully!")
     }
 }
+

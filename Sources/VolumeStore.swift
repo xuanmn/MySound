@@ -101,3 +101,55 @@ final class AudioActivityTracker: @unchecked Sendable {
         lastActivity.removeValue(forKey: pid)
     }
 }
+
+// =============================================================================
+// MARK: - Per-Tap Real-Time Control Block
+// =============================================================================
+
+/// `TapControl` holds the state the real-time IO proc needs for a single tap, without locks or hashing.
+///
+/// Each value is a naturally aligned 32/64-bit word in its own heap allocation. Aligned loads/stores of
+/// these sizes are single instructions on arm64 and x86_64, so the RT thread always sees a whole value.
+/// Writers are the main thread only; the RT thread only reads `gain` and writes `lastReportTicks`.
+final class TapControl: @unchecked Sendable {
+    private let gainBits = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+    private let lastReportTicks = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)
+
+    /// Minimum interval between activity reports from the RT thread (~250 ms), in mach ticks.
+    private static let reportIntervalTicks: UInt64 = {
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        return 250_000_000 * UInt64(tb.denom) / UInt64(tb.numer)
+    }()
+
+    init(gain: Float) {
+        gainBits.initialize(to: gain.bitPattern)
+        lastReportTicks.initialize(to: 0)
+        // Resolve the lazy static here (main thread) so the RT thread never hits dispatch_once.
+        _ = Self.reportIntervalTicks
+    }
+
+    deinit {
+        gainBits.deallocate()
+        lastReportTicks.deallocate()
+    }
+
+    /// Current linear gain (0.0...1.0). Safe to read from the RT thread.
+    var gain: Float {
+        get { Float(bitPattern: gainBits.pointee) }
+        set { gainBits.pointee = newValue.bitPattern }
+    }
+
+    /// Returns true at most once per report interval, so the RT thread only takes the
+    /// activity-tracker lock a few times per second instead of on every buffer.
+    @inline(__always)
+    func shouldReportActivity() -> Bool {
+        let now = mach_absolute_time()
+        if now &- lastReportTicks.pointee >= Self.reportIntervalTicks {
+            lastReportTicks.pointee = now
+            return true
+        }
+        return false
+    }
+}
+

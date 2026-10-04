@@ -67,10 +67,14 @@ class AudioTapManager: NSObject, ObservableObject {
         let procID: AudioDeviceIOProcID
         let objectIDs: [AudioObjectID]
         let createdAt: CFAbsoluteTime
+        /// Lock-free gain/activity state shared with the real-time IO proc.
+        let control: TapControl
     }
 
     /// Map of active process taps keyed by PID.
-    @Published var activeTaps: [pid_t: TapState] = [:]
+    @Published var activeTaps: [pid_t: TapState] = [:] {
+        didSet { updateCleanupTimerState() }
+    }
     /// Currently selected default output device.
     @Published var currentOutputDevice: AudioOutputDevice?
     /// List of all detected output-capable audio devices on the system.
@@ -149,17 +153,28 @@ class AudioTapManager: NSObject, ObservableObject {
         setupProcessListListener()
         refreshOutputDevices()
         setupHardwareListeners()
-        setupCleanupTimer()
     }
 
     // MARK: - Periodic Cleanup
 
-    /// Periodically cleans up taps for applications that have exited or stopped playing audio.
-    private func setupCleanupTimer() {
-        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.cleanupInactiveTaps()
+    /// Seconds of silence after which an idle tap is torn down.
+    /// Long enough to survive pause/resume without rebuilding the aggregate device,
+    /// short enough that a silent tap doesn't keep the output hardware awake indefinitely.
+    private let idleTapTeardownWindow: TimeInterval = 30.0
+
+    /// Runs the cleanup timer only while taps exist, so an idle app has zero periodic wakeups.
+    private func updateCleanupTimerState() {
+        if activeTaps.isEmpty {
+            cleanupTimer?.invalidate()
+            cleanupTimer = nil
+        } else if cleanupTimer == nil {
+            let timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.cleanupInactiveTaps()
+                }
             }
+            timer.tolerance = 2.0
+            cleanupTimer = timer
         }
     }
 
@@ -179,7 +194,7 @@ class AudioTapManager: NSObject, ObservableObject {
             if age < 5.0 { continue }
             
             let isRunning = NSRunningApplication(processIdentifier: pid) != nil
-            let isActive = Self.activityTracker.isAudioActive(for: pid, window: 3.0)
+            let isActive = Self.activityTracker.isAudioActive(for: pid, window: idleTapTeardownWindow)
             if !isRunning || !isActive {
                 removeTap(for: pid)
             }
@@ -317,7 +332,10 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Destroys and recreates all process taps (e.g. when switching from Speakers to Headphones).
     func recreateAllTaps() {
         let currentPIDs = Array(activeTaps.keys)
+        let savedVolumes = currentPIDs.map { ($0, volumeStore.get($0)) }
         removeAllTaps()
+        // removeTap clears VolumeStore entries; restore them so rebuilt taps keep the user's volume.
+        for (pid, vol) in savedVolumes { volumeStore.set(pid, vol) }
         for pid in currentPIDs {
             createTap(for: pid)
         }
@@ -326,9 +344,14 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Checks active taps to see if underlying AudioObjectIDs have changed (e.g. app reopened a stream).
     private func refreshActiveTaps() {
         for (pid, state) in activeTaps {
+            // Skip if an earlier iteration already rebuilt this tap via its alias PID.
+            guard activeTaps[pid]?.tapID == state.tapID else { continue }
             let currentObjectIDs = getAudioObjectIDs(for: pid)
             if Set(currentObjectIDs) != Set(state.objectIDs) && !currentObjectIDs.isEmpty {
+                let aliasPIDs = activeTaps.filter { $0.value.tapID == state.tapID }.map(\.key)
+                let savedVolumes = aliasPIDs.map { ($0, volumeStore.get($0)) }
                 removeTap(for: pid)
+                for (p, vol) in savedVolumes { volumeStore.set(p, vol) }
                 createTap(for: pid)
             }
         }
@@ -345,6 +368,8 @@ class AudioTapManager: NSObject, ObservableObject {
         }
         if activeTaps[pid] == nil && activeTaps[targetPID] == nil {
             createTap(for: targetPID)
+        } else {
+            syncTapGain(mainPID: pid, targetPID: targetPID)
         }
     }
 
@@ -356,7 +381,15 @@ class AudioTapManager: NSObject, ObservableObject {
 
         if activeTaps[mainPID] == nil && activeTaps[targetPID] == nil {
             createTap(for: targetPID)
+        } else {
+            syncTapGain(mainPID: mainPID, targetPID: targetPID)
         }
+    }
+
+    /// Pushes the current stored volume into the tap's real-time control block.
+    private func syncTapGain(mainPID: pid_t, targetPID: pid_t) {
+        guard let state = activeTaps[mainPID] ?? activeTaps[targetPID] else { return }
+        state.control.gain = min(volumeStore.get(mainPID), volumeStore.get(targetPID))
     }
 
     // MARK: - Tap Creation Engine
@@ -526,11 +559,11 @@ class AudioTapManager: NSObject, ObservableObject {
         // Real-Time Audio IO Callback:
         // Executed by CoreAudio on a dedicated real-time high-priority thread.
         // ---------------------------------------------------------------------
-        let volumeStore = self.volumeStore
+        let control = TapControl(gain: min(volumeStore.get(pid), volumeStore.get(targetPID)))
         var procID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) { (now, inputData, inputTime, outputData, outputTime) in
-            // Read volume multiplier safely from lock-protected store
-            let vol = min(volumeStore.get(pid), volumeStore.get(targetPID))
+            // Lock-free gain read from the per-tap control block
+            let vol = control.gain
 
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
@@ -575,7 +608,7 @@ class AudioTapManager: NSObject, ObservableObject {
                     }
                 }
             }
-            if hasActiveAudio {
+            if hasActiveAudio && control.shouldReportActivity() {
                 AudioTapManager.activityTracker.recordActivity(for: pid)
                 AudioTapManager.activityTracker.recordActivity(for: targetPID)
             }
@@ -583,7 +616,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
         // Start aggregate device audio playback
         if status == noErr, let proc = procID {
-            let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs, createdAt: CFAbsoluteTimeGetCurrent())
+            let tapState = TapState(tapID: tapID, aggregateID: aggID, procID: proc, objectIDs: objectIDs, createdAt: CFAbsoluteTimeGetCurrent(), control: control)
             activeTaps[pid] = tapState
             activeTaps[targetPID] = tapState
             
@@ -876,9 +909,11 @@ class AudioTapManager: NSObject, ObservableObject {
         var allPIDs = Set<pid_t>()
         var queue: [(pid: pid_t, depth: Int)] = [(parentPID, 0)]
         var visited: Set<pid_t> = [parentPID]
+        var head = 0
 
-        while !queue.isEmpty {
-            let (currentPID, depth) = queue.removeFirst()
+        while head < queue.count {
+            let (currentPID, depth) = queue[head]
+            head += 1
             if depth >= maxDepth { continue }
 
             let bufferSize = proc_listchildpids(currentPID, nil, 0)
@@ -968,13 +1003,10 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Resolves the filesystem executable path for a given process ID using `proc_pidpath`.
     private nonisolated static func getPath(for pid: pid_t) -> String? {
-        let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(MAXPATHLEN))
-        defer { pathBuffer.deallocate() }
-        let pathLength = proc_pidpath(pid, pathBuffer, UInt32(MAXPATHLEN))
-        if pathLength > 0 {
-            return String(cString: pathBuffer)
+        withUnsafeTemporaryAllocation(of: CChar.self, capacity: Int(MAXPATHLEN)) { buf in
+            guard let base = buf.baseAddress, proc_pidpath(pid, base, UInt32(MAXPATHLEN)) > 0 else { return nil }
+            return String(cString: base)
         }
-        return nil
     }
 
     /// Inspects whether an AudioObjectID is actively outputting sound to hardware.

@@ -40,7 +40,6 @@ struct MySoundApp: App {
     
     /// Initializes core managers upon startup.
     init() {
-        print("MySound Starting Up...")
 
         // 1. Initialize AudioTapManager:
         //    Sets up CoreAudio HAL listeners for process audio events and hardware output device changes.

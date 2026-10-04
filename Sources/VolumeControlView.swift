@@ -47,6 +47,10 @@ class AppManager: ObservableObject {
     /// Published list of apps currently playing audio, bound to the SwiftUI view.
     @Published var apps: [AppVolume] = []
 
+    /// PIDs that produced audible sound recently. Published only when it changes so rows
+    /// re-render on actual state transitions rather than on a per-row timer.
+    @Published var activePIDs: Set<pid_t> = []
+
     /// Polling timer to detect when apps start or stop playing audio.
     private var timer: Timer?
 
@@ -72,12 +76,31 @@ class AppManager: ObservableObject {
             object: nil
         )
 
-        // Periodically refresh (every 1.5 seconds) to catch audio playback start/stop events.
-        self.timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        // Periodically refresh to catch audio playback start/stop events.
+        // Fast while the popover is visible, slow while hidden (see setPopoverVisible).
+        scheduleTimer(interval: hiddenPollInterval)
+    }
+
+    /// Poll interval while the popover is open (responsive UI).
+    private let visiblePollInterval: TimeInterval = 1.5
+    /// Poll interval while the popover is closed (only needed to apply saved volumes to newly playing apps).
+    private let hiddenPollInterval: TimeInterval = 5.0
+
+    private func scheduleTimer(interval: TimeInterval) {
+        timer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateApps()
             }
         }
+        // Allow macOS to coalesce wakeups with other timers to save power.
+        t.tolerance = interval * 0.3
+        timer = t
+    }
+
+    /// Switches polling cadence based on whether the mixer UI is visible.
+    func setPopoverVisible(_ visible: Bool) {
+        scheduleTimer(interval: visible ? visiblePollInterval : hiddenPollInterval)
     }
 
     deinit {
@@ -107,8 +130,16 @@ class AppManager: ObservableObject {
                     self.apps = newApps
                 }
 
-                // Ensure taps exist for all active apps with restored volume
-                for app in newApps {
+                let newActive = Set(newApps.lazy
+                    .filter { AudioTapManager.activityTracker.isAudioActive(for: $0.pid, window: 1.2) }
+                    .map(\.pid))
+                if newActive != self.activePIDs {
+                    self.activePIDs = newActive
+                }
+
+                // Only create taps for apps whose volume actually differs from 100%.
+                // A tap at unity gain is pure overhead (aggregate device + RT IO proc + buffer copy).
+                for app in newApps where app.volume < 0.999 {
                     AudioTapManager.shared.ensureTapCreated(for: app.pid, initialVolume: Float(app.volume))
                 }
             }
@@ -157,13 +188,14 @@ class AppManager: ObservableObject {
 
         // Step 3: Construct AppVolume models preserving prior volume adjustments or persistent preferences
         var newApps: [AppVolume] = []
+        let priorVolumes = Dictionary(existingApps.map { ($0.pid, $0.volume) }, uniquingKeysWith: { a, _ in a })
         for app in runningApps {
             guard let name = app.localizedName,
                   let icon = cachedIcon(for: app) else { continue }
 
             let bundleID = app.bundleIdentifier
             let existingVolume: Double
-            if let prior = existingApps.first(where: { $0.pid == app.processIdentifier })?.volume {
+            if let prior = priorVolumes[app.processIdentifier] {
                 existingVolume = prior
             } else if let bID = bundleID, let saved = VolumeStore.shared.getPersistentVolume(for: bID) {
                 existingVolume = saved
@@ -569,6 +601,7 @@ struct VolumeControlView: View {
             .frame(width: 330)
             .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
+                appManager.setPopoverVisible(true)
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
                 // Asynchronously query audio apps in background without stalling UI presentation
                 appManager.updateApps()
@@ -588,15 +621,13 @@ struct VolumeControlView: View {
                 }
             }
             .onDisappear {
+                appManager.setPopoverVisible(false)
                 permissionCheckTimer?.invalidate()
                 permissionCheckTimer = nil
             }
-            .onChange(of: appManager.apps.map { $0.pid }) { oldPids, newPids in
-                // Remove taps for terminated applications
-                for pid in oldPids where !newPids.contains(pid) {
-                    tapManager.removeTap(for: pid)
-                }
-            }
+            // Note: taps are not torn down when an app drops off the list (e.g. paused).
+            // AudioTapManager's cleanup timer removes them on quit or after a long idle period,
+            // avoiding costly aggregate-device rebuilds on every pause/resume.
 
             Divider()
 
@@ -1038,12 +1069,13 @@ struct OutputDeviceChip: View {
 struct AppVolumeRow: View {
     @Binding var app: AppVolume
     var onVolumeChange: (Float) -> Void
+    @EnvironmentObject private var appManager: AppManager
     @State private var previousVolume: Double = 0.5
     @State private var isHovered: Bool = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.35)) { _ in
-            let isActive = app.volume > 0.001 && AudioTapManager.activityTracker.isAudioActive(for: app.pid, window: 1.2)
+        Group {
+            let isActive = app.volume > 0.001 && appManager.activePIDs.contains(app.pid)
             let sliderTint: Color = {
                 if app.volume <= 0.001 {
                     return Color.gray.opacity(0.3)

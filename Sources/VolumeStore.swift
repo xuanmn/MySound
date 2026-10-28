@@ -100,6 +100,16 @@ final class AudioActivityTracker: @unchecked Sendable {
         defer { os_unfair_lock_unlock(&_lock) }
         lastActivity.removeValue(forKey: pid)
     }
+
+    /// Drops entries whose last activity is older than `age` seconds.
+    /// Activity is recorded for every audio-producing PID system-wide, so without pruning
+    /// the table accumulates entries for every short-lived helper process ever seen.
+    func prune(olderThan age: TimeInterval) {
+        let cutoff = CFAbsoluteTimeGetCurrent() - age
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        lastActivity = lastActivity.filter { $0.value >= cutoff }
+    }
 }
 
 // =============================================================================
@@ -110,7 +120,7 @@ final class AudioActivityTracker: @unchecked Sendable {
 ///
 /// Each value is a naturally aligned 32/64-bit word in its own heap allocation. Aligned loads/stores of
 /// these sizes are single instructions on arm64 and x86_64, so the RT thread always sees a whole value.
-/// Writers are the main thread only; the RT thread only reads `gain` and writes `lastReportTicks`.
+/// Writers are the main thread only; the RT thread only reads `gain` and writes `lastActiveTicks`.
 final class TapControl: @unchecked Sendable {
     private let gainBits = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
     private let lastActiveTicks = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)

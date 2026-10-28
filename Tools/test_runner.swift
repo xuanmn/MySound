@@ -46,6 +46,18 @@ func testAudioActivityTrackerLocking() {
     print("  ✅ Passed testAudioActivityTrackerLocking")
 }
 
+func testAudioActivityTrackerPrune() {
+    print("[TEST] testAudioActivityTrackerPrune...")
+    let tracker = AudioActivityTracker()
+    tracker.recordActivity(for: 111)
+    usleep(20_000)
+    tracker.recordActivity(for: 222)
+    tracker.prune(olderThan: 0.01)
+    assert(!tracker.isAudioActive(for: 111, window: 1000), "Stale entry should be pruned")
+    assert(tracker.isAudioActive(for: 222, window: 1000), "Fresh entry should survive pruning")
+    print("  ✅ Passed testAudioActivityTrackerPrune")
+}
+
 func testVolumeStorePersistence() {
     print("[TEST] testVolumeStorePersistence...")
     let testSuite = "com.xuanmn.mysound.test.\(UUID().uuidString)"
@@ -83,6 +95,7 @@ struct TestRunner {
         testDictionaryCleanupSafety()
         testVolumeStoreLocking()
         testAudioActivityTrackerLocking()
+        testAudioActivityTrackerPrune()
         testVolumeStorePersistence()
         testTapControl()
         print("\nAll unit tests passed successfully!")

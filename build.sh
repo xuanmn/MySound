@@ -26,7 +26,8 @@ fi
 
 if [ -f "Tools/test_runner.swift" ]; then
     echo "Running unit tests..."
-    swiftc -O "${SDK_FLAGS[@]}" -o "${BUILD_DIR}/test_runner" Sources/VolumeStore.swift Tools/test_runner.swift -target arm64-apple-macos14.2
+    # -Onone keeps assert() active; -O would strip every assertion and the tests could never fail.
+    swiftc -Onone "${SDK_FLAGS[@]}" -o "${BUILD_DIR}/test_runner" Sources/VolumeStore.swift Tools/test_runner.swift -target arm64-apple-macos14.2
     "${BUILD_DIR}/test_runner"
 fi
 

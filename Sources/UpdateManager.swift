@@ -10,8 +10,6 @@ struct UpdateInfo: Codable {
     let version: String
     /// Direct HTTPS URL to download the new `.zip` archive.
     let downloadUrl: String
-    /// Optional markdown release notes describing what changed.
-    let releaseNotes: String?
 }
 
 /// `GitHubAsset` models an individual release artifact attached to a GitHub Release.
@@ -34,15 +32,12 @@ struct GitHubRelease: Codable {
     let tagName: String
     /// Web page URL for the release on GitHub.
     let htmlUrl: String
-    /// Body description or changelog text.
-    let body: String?
     /// List of binary assets attached to this release.
     let assets: [GitHubAsset]?
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case htmlUrl = "html_url"
-        case body
         case assets
     }
 }
@@ -64,7 +59,6 @@ class UpdateManager: ObservableObject {
     @Published var isDownloading = false
     @Published var downloadProgress: Double = 0.0
     @Published var updateStatus: String?
-    @Published var errorMessage: String?
     
     /// Primary endpoint: raw static version file in GitHub repository.
     private let versionURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/version.json")!
@@ -93,7 +87,6 @@ class UpdateManager: ObservableObject {
         guard !isChecking && !isDownloading else { return }
         
         isChecking = true
-        errorMessage = nil
         
         Task {
             // Strategy 1: Attempt to fetch raw version.json (fastest, unmetered)
@@ -226,14 +219,7 @@ class UpdateManager: ObservableObject {
             
             do {
                 // Step 1: Stream download using URLSessionDownloadDelegate to track progress smoothly
-                var (tempFileURL, response) = try await downloadSession.download(from: zipURL)
-                
-                // If GitHub release zip URL returns 404, fallback to repository raw build zip
-                if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 404 {
-                    if let rawFallbackURL = URL(string: "https://raw.githubusercontent.com/xuanmn/MySound/main/build/MySound.zip") {
-                        (tempFileURL, response) = try await downloadSession.download(from: rawFallbackURL)
-                    }
-                }
+                let (tempFileURL, response) = try await downloadSession.download(from: zipURL)
 
                 guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                     throw NSError(domain: "UpdateError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to download update package (HTTP status \((response as? HTTPURLResponse)?.statusCode ?? 0)). Please ensure a release asset is published on GitHub."])

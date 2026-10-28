@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import CoreAudio
-import Combine
 
 // =============================================================================
 // MARK: - Notifications
@@ -171,7 +170,7 @@ class AppManager: ObservableObject {
     /// - Returns: Sorted list of `AppVolume` instances representing audio-playing applications.
     nonisolated static func getRunningApps(existingApps: [AppVolume]) -> [AppVolume] {
         // Step 1: Query CoreAudio for all PIDs actively outputting audio
-        let activeAudioPIDs = AudioTapManager.getAudioActivePIDs(onlyPlayingAudio: true)
+        let activeAudioPIDs = AudioTapManager.getAudioActivePIDs()
 
         // Step 2: Query NSWorkspace for regular GUI applications (ignoring background daemons)
         let allRunning = NSWorkspace.shared.runningApplications
@@ -394,7 +393,6 @@ struct VolumeControlView: View {
                         } else {
                             masterVolume = previousMasterVolume > 0.001 ? previousMasterVolume : 0.5
                         }
-                        tapManager.setSystemVolume(Float(masterVolume))
                     }) {
                         Image(systemName: masterVolume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.3.fill")
                             .foregroundColor(masterVolume <= 0.001 ? .red : (isMasterMuteHovered ? .primary : .secondary))
@@ -423,31 +421,23 @@ struct VolumeControlView: View {
                             @unknown default:
                                 break
                             }
-                            tapManager.setSystemVolume(Float(masterVolume))
-                        }
-                        .onChange(of: masterVolume) { _, newValue in
-                            if newValue > 0.001 {
-                                previousMasterVolume = newValue
-                            }
-                            tapManager.setSystemVolume(Float(newValue))
                         }
                         // Double-click to set master volume to 100%
                         .onTapGesture(count: 2) {
                             masterVolume = 1.0
-                            tapManager.setSystemVolume(1.0)
                         }
 
                     // Editable percentage readout (click-to-type & hover scroll)
                     EditableVolumeText(
                         volume: $masterVolume,
-                        onVolumeChange: { newVol in
-                            if newVol > 0.001 {
-                                previousMasterVolume = newVol
-                            }
-                            tapManager.setSystemVolume(Float(newVol))
-                        },
                         isMuted: masterVolume <= 0.001
                     )
+                }
+                .onChange(of: masterVolume) { _, newValue in
+                    if newValue > 0.001 {
+                        previousMasterVolume = newValue
+                    }
+                    tapManager.setSystemVolume(Float(newValue))
                 }
                 .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity)
@@ -461,7 +451,6 @@ struct VolumeControlView: View {
                 if masterVolume > 0.001 {
                     previousMasterVolume = masterVolume
                 }
-                hasPermission = AudioTapManager.hasAudioCapturePermission()
 
                 // Set up event-driven CoreAudio property listeners for master volume
                 setupVolumeListeners()
@@ -560,33 +549,11 @@ struct VolumeControlView: View {
                 } else {
                     // List of apps currently producing sound
                     if appManager.apps.count <= 6 {
-                        VStack(spacing: 3) {
-                            ForEach($appManager.apps) { $app in
-                                AppVolumeRow(app: $app) { newVolume in
-                                    tapManager.setVolume(for: app.pid, volume: newVolume)
-                                    if let bundleID = app.bundleIdentifier {
-                                        tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 6)
-                        .transition(.opacity)
+                        appRows
+                            .transition(.opacity)
                     } else {
                         ScrollView(.vertical, showsIndicators: true) {
-                            VStack(spacing: 3) {
-                                ForEach($appManager.apps) { $app in
-                                    AppVolumeRow(app: $app) { newVolume in
-                                        tapManager.setVolume(for: app.pid, volume: newVolume)
-                                        if let bundleID = app.bundleIdentifier {
-                                            tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 6)
+                            appRows
                         }
                         .frame(maxHeight: 280)
                         .transition(.opacity)
@@ -596,10 +563,9 @@ struct VolumeControlView: View {
             .frame(width: 330)
             .animation(.easeInOut(duration: 0.2), value: appManager.apps.map { $0.pid })
             .onAppear {
-                appManager.setPopoverVisible(true)
                 hasPermission = AudioTapManager.hasAudioCapturePermission()
-                // Asynchronously query audio apps in background without stalling UI presentation
-                appManager.updateApps()
+                // Starts the live refresh timer and kicks off an immediate background app query
+                appManager.setPopoverVisible(true)
 
                 // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
@@ -719,6 +685,23 @@ struct VolumeControlView: View {
             setupVolumeListeners()
             masterVolume = Double(tapManager.getSystemVolume())
         }
+    }
+
+    // -------------------------------------------------------------------------
+    /// Per-app volume rows, shared by the compact and scrolling list layouts.
+    private var appRows: some View {
+        VStack(spacing: 3) {
+            ForEach($appManager.apps) { $app in
+                AppVolumeRow(app: $app) { newVolume in
+                    tapManager.setVolume(for: app.pid, volume: newVolume)
+                    if let bundleID = app.bundleIdentifier {
+                        tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
     }
 
     // -------------------------------------------------------------------------
@@ -862,20 +845,19 @@ struct VolumeControlView: View {
     private func setupVolumeListeners() {
         removeVolumeListeners() // Clean up any stale listeners on the previously tracked device
 
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var deviceAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &deviceAddress, 0, nil, &propertySize, &defaultOutputDeviceID
-        ) == noErr else { return }
+        guard let defaultOutputDeviceID = readDefaultOutputDeviceID() else { return }
 
         // Store the device ID so removeVolumeListeners() targets the correct device
         listenedDeviceID = defaultOutputDeviceID
+
+        // Volume and mute changes both just re-read the effective system volume
+        let block: AudioObjectPropertyListenerBlock = { [weak tapManager] _, _ in
+            guard let tapManager = tapManager else { return }
+            Task { @MainActor in
+                let current = Double(tapManager.getSystemVolume())
+                NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
+            }
+        }
 
         // Volume property listener
         var volAddr = AudioObjectPropertyAddress(
@@ -886,15 +868,8 @@ struct VolumeControlView: View {
         if !AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
             volAddr.mElement = 1
         }
-        let volBlock: AudioObjectPropertyListenerBlock = { [weak tapManager] _, _ in
-            guard let tapManager = tapManager else { return }
-            Task { @MainActor in
-                let current = Double(tapManager.getSystemVolume())
-                NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
-            }
-        }
-        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, volBlock)
-        volumeListenerBlock = volBlock
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+        volumeListenerBlock = block
 
         // Mute property listener
         var muteAddr = AudioObjectPropertyAddress(
@@ -905,15 +880,8 @@ struct VolumeControlView: View {
         if !AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
             muteAddr.mElement = 1
         }
-        let muteBlock: AudioObjectPropertyListenerBlock = { [weak tapManager] _, _ in
-            guard let tapManager = tapManager else { return }
-            Task { @MainActor in
-                let current = Double(tapManager.getSystemVolume())
-                NotificationCenter.default.post(name: .mySoundSystemVolumeChanged, object: nil, userInfo: ["volume": current])
-            }
-        }
-        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, muteBlock)
-        muteListenerBlock = muteBlock
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+        muteListenerBlock = block
     }
 
     /// Unregisters CoreAudio volume and mute property listeners from the device they were registered on.
@@ -1117,7 +1085,6 @@ struct AppVolumeRow: View {
                     } else {
                         app.volume = previousVolume > 0.001 ? previousVolume : 0.5
                     }
-                    onVolumeChange(Float(app.volume))
                 }) {
                     Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
                         .foregroundColor(speakerColor)
@@ -1142,30 +1109,23 @@ struct AppVolumeRow: View {
                             break
                         }
                     }
-                    .onChange(of: app.volume) { _, newValue in
-                        if newValue > 0.001 {
-                            previousVolume = newValue
-                        }
-                        onVolumeChange(Float(newValue))
-                    }
                     // Double-click to set application volume to 100%
                     .onTapGesture(count: 2) {
                         app.volume = 1.0
-                        onVolumeChange(1.0)
                     }
                     .animation(.easeInOut(duration: 0.2), value: isActive)
 
                 // Editable percentage readout (click-to-type & hover scroll)
                 EditableVolumeText(
                     volume: $app.volume,
-                    onVolumeChange: { newVol in
-                        if newVol > 0.001 {
-                            previousVolume = newVol
-                        }
-                        onVolumeChange(Float(newVol))
-                    },
                     isMuted: app.volume <= 0.001
                 )
+            }
+            .onChange(of: app.volume) { _, newValue in
+                if newValue > 0.001 {
+                    previousVolume = newValue
+                }
+                onVolumeChange(Float(newValue))
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
@@ -1245,7 +1205,6 @@ struct ScrollWheelListener: NSViewRepresentable {
 /// 3. Click to open an inline numeric text field and type any exact percentage (0-100).
 struct EditableVolumeText: View {
     @Binding var volume: Double
-    var onVolumeChange: (Double) -> Void
     var isMuted: Bool = false
 
     @State private var isHovered: Bool = false
@@ -1309,9 +1268,7 @@ struct EditableVolumeText: View {
                 .overlay(
                     ScrollWheelListener(
                         onScroll: { change in
-                            let newVol = min(1.0, max(0.0, volume + change))
-                            volume = newVol
-                            onVolumeChange(newVol)
+                            volume = min(1.0, max(0.0, volume + change))
                         },
                         onClick: {
                             startEditing()
@@ -1346,9 +1303,7 @@ struct EditableVolumeText: View {
         let sanitized = textInput.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "%", with: "")
         if let intVal = Int(sanitized) {
             let clamped = min(100, max(0, intVal))
-            let newVol = Double(clamped) / 100.0
-            volume = newVol
-            onVolumeChange(newVol)
+            volume = Double(clamped) / 100.0
         }
         isEditing = false
         isFocused = false

@@ -41,7 +41,67 @@ func AudioHardwareCreateAggregateDevice(_ inDescription: CFDictionary, _ outDevi
 func AudioHardwareDestroyAggregateDevice(_ inDeviceID: AudioObjectID) -> OSStatus
 #endif
 
+// =============================================================================
+// MARK: - HAL Property Helpers
+// =============================================================================
 
+/// 'piro' -> `kAudioProcessPropertyIsRunningOutput` (not exported by all SDK versions).
+let kProcessIsRunningOutputSelector = AudioObjectPropertySelector(0x7069726f)
+
+/// Builds a property address with global scope / main element defaults.
+@inline(__always)
+func halAddress(_ selector: AudioObjectPropertySelector,
+                scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+                element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
+}
+
+/// Reads the system-wide list of CoreAudio process objects. Returns an empty array on failure.
+func readProcessObjectList() -> [AudioObjectID] {
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var address = halAddress(kAudioHardwarePropertyProcessObjectList)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids
+}
+
+/// Reads the PID owning a CoreAudio process object.
+func readProcessPID(_ processObject: AudioObjectID) -> pid_t? {
+    var address = halAddress(kAudioProcessPropertyPID)
+    var pid: pid_t = 0
+    var size = UInt32(MemoryLayout<pid_t>.size)
+    return AudioObjectGetPropertyData(processObject, &address, 0, nil, &size, &pid) == noErr ? pid : nil
+}
+
+/// Reads the current system default output device ID.
+func readDefaultOutputDeviceID() -> AudioDeviceID? {
+    var address = halAddress(kAudioHardwarePropertyDefaultOutputDevice)
+    var deviceID = AudioDeviceID(0)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID) == noErr else { return nil }
+    return deviceID
+}
+
+/// Sets the system default output device.
+func writeDefaultOutputDeviceID(_ deviceID: AudioDeviceID) -> OSStatus {
+    var address = halAddress(kAudioHardwarePropertyDefaultOutputDevice)
+    var id = deviceID
+    return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id)
+}
+
+/// Reads a CFString-valued property (e.g. name, UID) from a CoreAudio object.
+func readStringProperty(_ objectID: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+    var address = halAddress(selector)
+    var value: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let status = withUnsafeMutablePointer(to: &value) { ptr in
+        AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, ptr)
+    }
+    guard status == noErr, let string = value?.takeRetainedValue() else { return nil }
+    return string as String
+}
 
 // =============================================================================
 // MARK: - Audio Tap Manager
@@ -107,20 +167,12 @@ class AudioTapManager: NSObject, ObservableObject {
     /// - On macOS 14.2+, querying the hardware process object list succeeds and returns entries only when TCC is authorized.
     nonisolated static func hasAudioCapturePermission() -> Bool {
         var processListSize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = halAddress(kAudioHardwarePropertyProcessObjectList)
         let status = AudioObjectGetPropertyDataSize(
             AudioObjectID(kAudioObjectSystemObject),
             &address, 0, nil, &processListSize
         )
-        if status == noErr && processListSize > 0 {
-            let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
-            return count > 0
-        }
-        return false
+        return status == noErr && processListSize >= UInt32(MemoryLayout<AudioObjectID>.size)
     }
 
     /// Opens the appropriate System Settings Privacy pane for granting System Audio Recording permissions.
@@ -271,26 +323,14 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Synchronizes listeners for 'piro' (running output) on all CoreAudio HAL process objects.
     private func syncMonitoredProcessObjects() {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr, size > 0 else { return }
-        let count = Int(size) / MemoryLayout<AudioObjectID>.size
-        var currentProcessIDs = [AudioObjectID](repeating: 0, count: count)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &currentProcessIDs) == noErr else { return }
+        let currentProcessIDs = readProcessObjectList()
+        guard !currentProcessIDs.isEmpty else { return }
 
         let currentSet = Set(currentProcessIDs)
         let newlyAdded = currentSet.subtracting(monitoredProcessIDs)
         let removed = monitoredProcessIDs.subtracting(currentSet)
 
-        var piroAddr = AudioObjectPropertyAddress(
-            mSelector: AudioObjectPropertySelector(0x7069726f), // 'piro' -> kAudioProcessPropertyIsRunningOutput
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var piroAddr = halAddress(kProcessIsRunningOutputSelector)
 
         if processOutputListenerBlock == nil {
             processOutputListenerBlock = { [weak self] _, _ in
@@ -363,20 +403,21 @@ class AudioTapManager: NSObject, ObservableObject {
            newlyConnectedUIDs.contains(preferredUID),
            let preferredDevice = devices.first(where: { $0.uid == preferredUID }),
            current?.uid != preferredUID {
-            var devID = preferredDevice.id
-            let propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-            var propertyAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            if AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID) == noErr {
+            if writeDefaultOutputDeviceID(preferredDevice.id) == noErr {
                 current = preferredDevice
+                lastAppliedDeviceID = nil
+                lastAppliedSystemVolume = nil
+                lastAppliedSystemMute = nil
                 AppLogger.shared.log("Auto-restored newly reconnected preferred output device: \(preferredDevice.name) (\(preferredUID))")
             }
         }
 
         let deviceChanged = self.currentOutputDevice?.uid != current?.uid
+        if deviceChanged {
+            lastAppliedDeviceID = nil
+            lastAppliedSystemVolume = nil
+            lastAppliedSystemMute = nil
+        }
         self.availableOutputDevices = devices
         self.currentOutputDevice = current
 
@@ -435,6 +476,11 @@ class AudioTapManager: NSObject, ObservableObject {
             volumeStore.set(pid, initialVolume)
             volumeStore.set(targetPID, initialVolume)
         }
+        let effectiveVol = min(volumeStore.get(pid), volumeStore.get(targetPID))
+        if effectiveVol >= 0.999 {
+            // Unity gain: keep native audio path
+            return
+        }
         if activeTaps[pid] == nil && activeTaps[targetPID] == nil {
             createTap(for: targetPID)
         } else {
@@ -447,6 +493,14 @@ class AudioTapManager: NSObject, ObservableObject {
         let mainPID = getMainAppPID(for: targetPID)
         volumeStore.set(mainPID, volume)
         volumeStore.set(targetPID, volume)
+
+        if volume >= 0.999 {
+            // If restored to 100%, tear down any active tap to return to native zero-latency output
+            if activeTaps[mainPID] != nil || activeTaps[targetPID] != nil {
+                removeTap(for: targetPID)
+            }
+            return
+        }
 
         if activeTaps[mainPID] == nil && activeTaps[targetPID] == nil {
             createTap(for: targetPID)
@@ -741,11 +795,7 @@ class AudioTapManager: NSObject, ObservableObject {
     deinit {
         cleanupTimer?.invalidate()
         if let block = processOutputListenerBlock {
-            var piroAddr = AudioObjectPropertyAddress(
-                mSelector: AudioObjectPropertySelector(0x7069726f),
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
+            var piroAddr = halAddress(kProcessIsRunningOutputSelector)
             for id in monitoredProcessIDs {
                 AudioObjectRemovePropertyListenerBlock(id, &piroAddr, DispatchQueue.main, block)
             }
@@ -824,17 +874,7 @@ class AudioTapManager: NSObject, ObservableObject {
             }
 
             // Get device name
-            var nameAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioObjectPropertyName,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var name: Unmanaged<CFString>?
-            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            let nameStatus = withUnsafeMutablePointer(to: &name) { ptr in
-                AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, ptr)
-            }
-            guard nameStatus == noErr, let deviceName = name?.takeRetainedValue() as String? else {
+            guard let deviceName = readStringProperty(deviceID, kAudioObjectPropertyName) else {
                 continue
             }
 
@@ -844,26 +884,10 @@ class AudioTapManager: NSObject, ObservableObject {
             }
 
             // Get device UID
-            var uidAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceUID,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var uid: Unmanaged<CFString>?
-            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            var deviceUID = ""
-            if withUnsafeMutablePointer(to: &uid, { ptr in
-                AudioObjectGetPropertyData(deviceID, &uidAddr, 0, nil, &uidSize, ptr)
-            }) == noErr, let uidStr = uid?.takeRetainedValue() as String? {
-                deviceUID = uidStr
-            }
+            let deviceUID = readStringProperty(deviceID, kAudioDevicePropertyDeviceUID) ?? ""
 
             // Get transport type
-            var transportAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyTransportType,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
+            var transportAddr = halAddress(kAudioDevicePropertyTransportType)
             var transportTypeFourCC: UInt32 = 0
             var transportSize = UInt32(MemoryLayout<UInt32>.size)
             let transportStatus = AudioObjectGetPropertyData(deviceID, &transportAddr, 0, nil, &transportSize, &transportTypeFourCC)
@@ -875,38 +899,20 @@ class AudioTapManager: NSObject, ObservableObject {
         return outputDevices
     }
 
-    /// Fetches the currently active default system audio output device.
-    func getDefaultOutputDevice() -> AudioOutputDevice? {
-        return getDefaultOutputDeviceFromList(getAvailableOutputDevices())
-    }
-
     /// Resolves the default output device from a pre-fetched device list, avoiding redundant HAL enumeration.
     private func getDefaultOutputDeviceFromList(_ devices: [AudioOutputDevice]) -> AudioOutputDevice? {
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr else {
-            return nil
-        }
+        guard let defaultOutputDeviceID = readDefaultOutputDeviceID() else { return nil }
         return devices.first(where: { $0.id == defaultOutputDeviceID })
     }
 
     /// Switches the system-wide default output device to the specified hardware device.
     func setDefaultOutputDevice(_ device: AudioOutputDevice) {
-        var devID = device.id
-        let propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, propertySize, &devID)
+        let status = writeDefaultOutputDeviceID(device.id)
         if status == noErr {
             self.currentOutputDevice = device
+            lastAppliedDeviceID = nil
+            lastAppliedSystemVolume = nil
+            lastAppliedSystemMute = nil
             UserDefaults.standard.set(device.uid, forKey: preferredOutputDeviceUIDKey)
             AppLogger.shared.log("Switched default output device to \(device.name) (\(device.uid))")
             // Re-bind all active taps to the new physical output device
@@ -918,34 +924,51 @@ class AudioTapManager: NSObject, ObservableObject {
 
     // MARK: - System Master Volume Helpers
 
+    /// Cached last applied system volume and mute status to avoid redundant HAL IPC during continuous slider scrubbing.
+    private var lastAppliedSystemVolume: Float?
+    private var lastAppliedSystemMute: Bool?
+    private var lastAppliedDeviceID: AudioDeviceID?
+
     /// Resolves the default output device ID, preferring the cached value for efficiency.
     private func resolveDefaultOutputDeviceID() -> AudioDeviceID? {
-        if let cached = currentOutputDevice?.id { return cached }
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr else { return nil }
-        return defaultOutputDeviceID
+        currentOutputDevice?.id ?? readDefaultOutputDeviceID()
     }
 
     /// Adjusts the global macOS master output volume (0.0...1.0) and mute flag on the default output device.
     func setSystemVolume(_ volume: Float) {
         guard let defaultOutputDeviceID = resolveDefaultOutputDeviceID() else { return }
-        var vol = volume
-        // Set volume on Main element, and channels 1 and 2
-        for element in [kAudioObjectPropertyElementMain, 1, 2] {
-            var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
-            if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
-                _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+
+        if lastAppliedDeviceID != defaultOutputDeviceID {
+            lastAppliedDeviceID = defaultOutputDeviceID
+            lastAppliedSystemVolume = nil
+            lastAppliedSystemMute = nil
+        }
+
+        let isMuted = (volume <= 0.001)
+        let shouldSetMute = (lastAppliedSystemMute != isMuted)
+        let shouldSetVolume = (lastAppliedSystemVolume == nil || abs(lastAppliedSystemVolume! - volume) >= 0.001)
+
+        guard shouldSetVolume || shouldSetMute else { return }
+
+        if shouldSetVolume {
+            lastAppliedSystemVolume = volume
+            var vol = volume
+            for element in [kAudioObjectPropertyElementMain, 1, 2] {
+                var volAddr = halAddress(kAudioDevicePropertyVolumeScalar, scope: kAudioDevicePropertyScopeOutput, element: UInt32(element))
+                if AudioObjectHasProperty(defaultOutputDeviceID, &volAddr) {
+                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+                }
             }
         }
-        
-        // Set hardware mute flag when volume drops to zero
-        var isMuted: UInt32 = (volume <= 0.001) ? 1 : 0
-        for element in [kAudioObjectPropertyElementMain, 1, 2] {
-            var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(element))
-            if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
-                _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &isMuted)
+
+        if shouldSetMute {
+            lastAppliedSystemMute = isMuted
+            var muteVal: UInt32 = isMuted ? 1 : 0
+            for element in [kAudioObjectPropertyElementMain, 1, 2] {
+                var muteAddr = halAddress(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput, element: UInt32(element))
+                if AudioObjectHasProperty(defaultOutputDeviceID, &muteAddr) {
+                    _ = AudioObjectSetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &muteVal)
+                }
             }
         }
     }
@@ -953,13 +976,17 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Reads the current global macOS master output volume (0.0...1.0).
     func getSystemVolume() -> Float {
         guard let defaultOutputDeviceID = resolveDefaultOutputDeviceID() else { return 0.5 }
+        lastAppliedDeviceID = defaultOutputDeviceID
+
         // Check mute property first
         for element in [kAudioObjectPropertyElementMain, UInt32(1), UInt32(2)] {
             var isMuted: UInt32 = 0
             var muteSize = UInt32(MemoryLayout<UInt32>.size)
-            var muteAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput, mElement: element)
+            var muteAddr = halAddress(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput, element: element)
             if AudioObjectGetPropertyData(defaultOutputDeviceID, &muteAddr, 0, nil, &muteSize, &isMuted) == noErr {
                 if isMuted == 1 {
+                    lastAppliedSystemVolume = 0.0
+                    lastAppliedSystemMute = true
                     return 0.0
                 }
             }
@@ -968,29 +995,20 @@ class AudioTapManager: NSObject, ObservableObject {
         // Read scalar volume
         var vol: Float32 = 0
         var volSize = UInt32(MemoryLayout<Float32>.size)
-        var volAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        var volAddr = halAddress(kAudioDevicePropertyVolumeScalar, scope: kAudioDevicePropertyScopeOutput, element: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol) != noErr {
             volAddr.mElement = 1
             AudioObjectGetPropertyData(defaultOutputDeviceID, &volAddr, 0, nil, &volSize, &vol)
         }
-        return Float(vol)
+        let result = Float(vol)
+        lastAppliedSystemVolume = result
+        lastAppliedSystemMute = (result <= 0.001)
+        return result
     }
 
     /// Retrieves the string UID of the active default output device.
     private func getDefaultOutputDeviceUID() -> String? {
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &propertySize, &defaultOutputDeviceID) == noErr {
-            var uid: Unmanaged<CFString>?
-            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            var uidAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            if withUnsafeMutablePointer(to: &uid, { ptr in AudioObjectGetPropertyData(defaultOutputDeviceID, &uidAddress, 0, nil, &uidSize, ptr) }) == noErr,
-               let uidString = uid?.takeRetainedValue() {
-                return uidString as String
-            }
-        }
-        return nil
+        readDefaultOutputDeviceID().flatMap { readStringProperty($0, kAudioDevicePropertyDeviceUID) }
     }
 
     // MARK: - Process Tree Helpers
@@ -1034,13 +1052,9 @@ class AudioTapManager: NSObject, ObservableObject {
     /// 4. App Bundle Identifier prefix matching
     /// 5. Executable bundle directory containment
     private func getAudioObjectIDs(for targetPID: pid_t) -> [AudioObjectID] {
-        var processListSize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
-        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
-        var processIDs = [AudioObjectID](repeating: 0, count: count)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
-        
+        let processIDs = readProcessObjectList()
+        guard !processIDs.isEmpty else { return [] }
+
         let mainPID = getMainAppPID(for: targetPID)
         let pidsToMatch: Set<pid_t> = [
             targetPID,
@@ -1054,7 +1068,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
         let targetApp = NSRunningApplication(processIdentifier: targetPID) ?? NSRunningApplication(processIdentifier: mainPID)
         let targetBundleID = targetApp?.bundleIdentifier?.lowercased()
-        let targetLocalizedName = targetApp?.localizedName?.lowercased()
+        let targetBundlePath = targetApp?.bundleURL?.standardized.path.lowercased()
         let targetBundleName = targetApp?.bundleURL?.deletingPathExtension().lastPathComponent.lowercased()
         
         // Pre-index running apps by PID to avoid repeated NSRunningApplication lookups in the loop
@@ -1065,10 +1079,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
         var matchingIDs: [AudioObjectID] = []
         for processID in processIDs {
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var processPID: pid_t = 0
-            if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
+            if let processPID = readProcessPID(processID) {
                 var matched = false
                 let procRespPID = Self.getResponsiblePID?(processPID) ?? processPID
                 
@@ -1077,9 +1088,11 @@ class AudioTapManager: NSObject, ObservableObject {
                 } else if let processApp = runningAppIndex[processPID], let procBundleID = processApp.bundleIdentifier?.lowercased(), let targetBundleID = targetBundleID, (procBundleID.hasPrefix(targetBundleID) || targetBundleID.hasPrefix(procBundleID)) {
                     matched = true
                 } else if let procPath = Self.getPath(for: processPID)?.lowercased() {
-                    if let targetLocalizedName = targetLocalizedName, !targetLocalizedName.isEmpty, procPath.contains(targetLocalizedName) {
+                    if let targetBundlePath = targetBundlePath, !targetBundlePath.isEmpty,
+                       procPath.hasPrefix(targetBundlePath + "/") || procPath == targetBundlePath {
                         matched = true
-                    } else if let targetBundleName = targetBundleName, !targetBundleName.isEmpty, procPath.contains(targetBundleName) {
+                    } else if let targetBundleName = targetBundleName, !targetBundleName.isEmpty,
+                              procPath.contains("/" + targetBundleName + ".app/") {
                         matched = true
                     }
                 }
@@ -1105,28 +1118,24 @@ class AudioTapManager: NSObject, ObservableObject {
     nonisolated static func isProcessRunningOutput(_ processID: AudioObjectID) -> Bool {
         var isRunning: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        var addr = AudioObjectPropertyAddress(
-            mSelector: AudioObjectPropertySelector(0x7069726f), // 'piro'
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var addr = halAddress(kProcessIsRunningOutputSelector)
         if AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &isRunning) == noErr {
             return isRunning != 0
         }
         return false
     }
 
-    /// Discovers all process IDs that are currently playing sound.
+    /// Activity entries older than this are dropped. Must exceed every query window used
+    /// (largest is `idleTapTeardownWindow` = 30s), so pruning never changes a result.
+    private nonisolated static let activityRetention: TimeInterval = 60
+
+    /// Discovers all process IDs that are currently playing (or very recently played) sound.
     ///
-    /// - Parameter onlyPlayingAudio: If true, filters for processes whose hardware output status or recent activity is active.
     /// - Returns: Set of active process IDs (including mapped main application PIDs).
-    nonisolated static func getAudioActivePIDs(onlyPlayingAudio: Bool = true) -> Set<pid_t> {
-        var processListSize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize) != noErr { return [] }
-        let count = Int(processListSize) / MemoryLayout<AudioObjectID>.size
-        var processIDs = [AudioObjectID](repeating: 0, count: count)
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &processListSize, &processIDs) != noErr { return [] }
+    nonisolated static func getAudioActivePIDs() -> Set<pid_t> {
+        activityTracker.prune(olderThan: activityRetention)
+        let processIDs = readProcessObjectList()
+        guard !processIDs.isEmpty else { return [] }
 
         var activePIDs = Set<pid_t>()
         let runningApps = NSWorkspace.shared.runningApplications
@@ -1141,10 +1150,7 @@ class AudioTapManager: NSObject, ObservableObject {
         bundlePathIndex.sort { $0.path.count > $1.path.count }
 
         for processID in processIDs {
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            var pidAddress = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var processPID: pid_t = 0
-            if AudioObjectGetPropertyData(processID, &pidAddress, 0, nil, &pidSize, &processPID) == noErr {
+            if let processPID = readProcessPID(processID) {
                 let respPID = Self.getResponsiblePID?(processPID) ?? processPID
 
                 let isHardwarePlaying = isProcessRunningOutput(processID)
@@ -1153,7 +1159,7 @@ class AudioTapManager: NSObject, ObservableObject {
                     activityTracker.recordActivity(for: respPID)
                 }
 
-                let isRecentlyActive = !onlyPlayingAudio || activityTracker.isAudioActive(for: processPID, window: 1.0) || activityTracker.isAudioActive(for: respPID, window: 1.0)
+                let isRecentlyActive = isHardwarePlaying || activityTracker.isAudioActive(for: processPID, window: 1.0) || activityTracker.isAudioActive(for: respPID, window: 1.0)
 
                 if isRecentlyActive {
                     activePIDs.insert(respPID)

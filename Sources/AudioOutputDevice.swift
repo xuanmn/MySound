@@ -6,7 +6,7 @@ import CoreAudio
 // =============================================================================
 
 /// Hardware transport mechanism used to connect the audio output device.
-enum AudioDeviceTransportType: String, Equatable, CaseIterable, Sendable {
+enum AudioDeviceTransportType: String, Sendable {
     case builtIn = "Built-in"
     case bluetooth = "Bluetooth"
     case usb = "USB"

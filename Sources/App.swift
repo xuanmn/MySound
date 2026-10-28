@@ -61,7 +61,6 @@ struct MySoundApp: App {
         MenuBarExtra("MySound", systemImage: "speaker.wave.2.fill") {
             // Main popover view presenting master volume and per-app sliders
             VolumeControlView()
-                .preferredColorScheme(.dark)
                 // Inject shared singleton state into the SwiftUI environment
                 .environmentObject(UpdateManager.shared)
                 .environmentObject(AudioTapManager.shared)

@@ -29,7 +29,7 @@ DMG_PATH="${TMP_DIR}/MySound.dmg"
 DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep "browser_download_url.*dmg" | cut -d : -f 2,3 | tr -d \" | xargs 2>/dev/null || true)
 
 if [ -z "$DOWNLOAD_URL" ]; then
-    DOWNLOAD_URL="https://raw.githubusercontent.com/${REPO}/main/build/${APP_NAME}.dmg"
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${APP_NAME}.dmg"
 fi
 
 curl -fSL "$DOWNLOAD_URL" -o "$DMG_PATH" || {

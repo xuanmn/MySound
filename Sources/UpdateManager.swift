@@ -18,11 +18,6 @@ struct GitHubAsset: Codable {
     let name: String
     /// Direct public download link for the asset.
     let browserDownloadUrl: String
-    
-    enum CodingKeys: String, CodingKey {
-        case name
-        case browserDownloadUrl = "browser_download_url"
-    }
 }
 
 /// `GitHubRelease` represents the JSON response returned by the GitHub Releases API:
@@ -34,12 +29,6 @@ struct GitHubRelease: Codable {
     let htmlUrl: String
     /// List of binary assets attached to this release.
     let assets: [GitHubAsset]?
-
-    enum CodingKeys: String, CodingKey {
-        case tagName = "tag_name"
-        case htmlUrl = "html_url"
-        case assets
-    }
 }
 
 // MARK: - Update Manager
@@ -137,7 +126,9 @@ class UpdateManager: ObservableObject {
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             let (data, response) = try await Self.ephemeralSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(GitHubRelease.self, from: data)
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(GitHubRelease.self, from: data)
         } catch {
             return nil
         }

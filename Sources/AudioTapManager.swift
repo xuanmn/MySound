@@ -300,11 +300,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Registers a listener for system-wide process list changes (`kAudioHardwarePropertyProcessObjectList`).
     private func setupProcessListListener() {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = halAddress(kAudioHardwarePropertyProcessObjectList)
         // Store block reference so deinit can unregister the exact same pointer
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor [weak self] in
@@ -359,11 +355,7 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Registers listeners for default output device changes and hardware device plug/unplug events.
     private func setupHardwareListeners() {
         // Default output device change listener
-        var defaultDevAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var defaultDevAddr = halAddress(kAudioHardwarePropertyDefaultOutputDevice)
         let outputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor [weak self] in
                 self?.refreshOutputDevices()
@@ -374,11 +366,7 @@ class AudioTapManager: NSObject, ObservableObject {
         outputDeviceListenerBlock = outputBlock
 
         // Hardware device list change listener (e.g. connecting headphones or DAC)
-        var devicesAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var devicesAddr = halAddress(kAudioHardwarePropertyDevices)
         let devicesBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor [weak self] in
                 self?.refreshOutputDevices()
@@ -843,11 +831,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Queries the CoreAudio HAL for all available output devices, filtering out MySound virtual tap devices.
     func getAvailableOutputDevices() -> [AudioOutputDevice] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = halAddress(kAudioHardwarePropertyDevices)
         var propertySize: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize) == noErr else {
             return []
@@ -863,11 +847,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
         for deviceID in deviceIDs {
             // Check if device has output streams
-            var streamAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyStreams,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain
-            )
+            var streamAddr = halAddress(kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeOutput)
             var streamSize: UInt32 = 0
             if AudioObjectGetPropertyDataSize(deviceID, &streamAddr, 0, nil, &streamSize) != noErr || streamSize == 0 {
                 continue

@@ -409,7 +409,7 @@ struct VolumeControlView: View {
                     .accessibilityLabel(masterVolume <= 0.001 ? "Unmute system master volume" : "Mute system master volume")
 
                     // Custom Master Volume Slider
-                    BoxySlider(value: $masterVolume, range: 0...1, tint: .blue)
+                    BoxySlider(value: $masterVolume, tint: .blue)
                         .accessibilityLabel("System Master Volume")
                         .accessibilityValue("\(Int(masterVolume * 100)) percent")
                         .accessibilityAdjustableAction { direction in
@@ -725,7 +725,7 @@ struct VolumeControlView: View {
     }
 
     /// Generates a crisp vector status dot image for NSMenuItem indicators.
-    private func makeStatusDot(color: NSColor, filled: Bool = true) -> NSImage {
+    private func makeStatusDot(color: NSColor) -> NSImage {
         let size = NSSize(width: 14, height: 14)
         let image = NSImage(size: size, flipped: false) { rect in
             let dotDiameter: CGFloat = 8
@@ -735,15 +735,8 @@ struct VolumeControlView: View {
                 width: dotDiameter,
                 height: dotDiameter
             )
-            let path = NSBezierPath(ovalIn: dotRect)
-            if filled {
-                color.setFill()
-                path.fill()
-            } else {
-                path.lineWidth = 1.3
-                color.setStroke()
-                path.stroke()
-            }
+            color.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
             return true
         }
         image.isTemplate = false
@@ -780,8 +773,8 @@ struct VolumeControlView: View {
         )
         loginItem.target = coordinator
         loginItem.image = isLaunchAtLogin
-            ? makeStatusDot(color: .systemGreen, filled: true)
-            : makeStatusDot(color: NSColor(white: 0.55, alpha: 0.45), filled: true)
+            ? makeStatusDot(color: .systemGreen)
+            : makeStatusDot(color: NSColor(white: 0.55, alpha: 0.45))
         menu.addItem(loginItem)
 
         // 2. System Audio Permission
@@ -792,8 +785,8 @@ struct VolumeControlView: View {
         )
         permItem.target = coordinator
         permItem.image = hasPermission
-            ? makeStatusDot(color: .systemGreen, filled: true)
-            : makeStatusDot(color: .systemOrange, filled: true)
+            ? makeStatusDot(color: .systemGreen)
+            : makeStatusDot(color: .systemOrange)
         menu.addItem(permItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -1096,7 +1089,7 @@ struct AppVolumeRow: View {
                 .accessibilityLabel(app.volume <= 0.001 ? "Unmute \(app.name)" : "Mute \(app.name)")
 
                 // Custom Application Volume Slider with Dynamic Accent Tint
-                BoxySlider(value: $app.volume, range: 0...1, tint: sliderTint)
+                BoxySlider(value: $app.volume, tint: sliderTint)
                     .accessibilityLabel("\(app.name) volume")
                     .accessibilityValue("\(Int(app.volume * 100)) percent")
                     .accessibilityAdjustableAction { direction in
@@ -1325,19 +1318,19 @@ struct EditableVolumeText: View {
 /// - Smooth drag gesture with snap-to-edge boundaries.
 struct BoxySlider: View {
     @Binding var value: Double
-    var range: ClosedRange<Double> = 0...1
     var tint: Color = .blue
-    var trackHeight: CGFloat = 4
-    var thumbSize: CGFloat = 13
 
     @State private var isHovered: Bool = false
     @State private var isDragging: Bool = false
+
+    private let trackHeight: CGFloat = 4
+    private let thumbSize: CGFloat = 13
 
     var body: some View {
         GeometryReader { geometry in
             let totalWidth = geometry.size.width
             let usableWidth = max(totalWidth - thumbSize, 1)
-            let percent = max(0, min(1, CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))))
+            let percent = max(0, min(1, CGFloat(value)))
             let thumbX = percent * usableWidth
             let fillWidth = max(trackHeight, percent * usableWidth + (thumbSize / 2))
 
@@ -1378,15 +1371,14 @@ struct BoxySlider: View {
                     .onChanged { gesture in
                         isDragging = true
                         let locationX = gesture.location.x - (thumbSize / 2)
-                        let newPercent = max(0, min(1, locationX / usableWidth))
-                        var newValue = range.lowerBound + Double(newPercent) * (range.upperBound - range.lowerBound)
+                        var newPercent = max(0, min(1, Double(locationX / usableWidth)))
                         // Snap to clean 0% or 100% near edges
-                        if newValue < 0.005 {
-                            newValue = 0.0
-                        } else if newValue > 0.995 {
-                            newValue = 1.0
+                        if newPercent < 0.005 {
+                            newPercent = 0.0
+                        } else if newPercent > 0.995 {
+                            newPercent = 1.0
                         }
-                        value = newValue
+                        value = newPercent
                     }
                     .onEnded { _ in
                         isDragging = false

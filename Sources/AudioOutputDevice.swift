@@ -6,18 +6,18 @@ import CoreAudio
 // =============================================================================
 
 /// Hardware transport mechanism used to connect the audio output device.
-enum AudioDeviceTransportType: String, Sendable {
-    case builtIn = "Built-in"
-    case bluetooth = "Bluetooth"
-    case usb = "USB"
-    case hdmi = "HDMI"
-    case displayPort = "DisplayPort"
-    case airPlay = "AirPlay"
-    case thunderbolt = "Thunderbolt"
-    case pci = "PCI"
-    case fireWire = "FireWire"
-    case virtual = "Virtual"
-    case unknown = "Audio Device"
+enum AudioDeviceTransportType: Sendable {
+    case builtIn
+    case bluetooth
+    case usb
+    case hdmi
+    case displayPort
+    case airPlay
+    case thunderbolt
+    case pci
+    case fireWire
+    case virtual
+    case unknown
 
     /// Maps CoreAudio 4-character transport codes (`kAudioDevicePropertyTransportType`) to typed enum.
     static func from(fourCC: UInt32) -> AudioDeviceTransportType {

@@ -108,6 +108,10 @@ class AppManager: ObservableObject {
 
     /// Refreshes the list of active audio-producing applications on a background queue.
     @objc func updateApps(notification: Notification? = nil) {
+        if let terminatedApp = notification?.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+           notification?.name == NSWorkspace.didTerminateApplicationNotification {
+            VolumeStore.shared.remove(terminatedApp.processIdentifier)
+        }
         pendingUpdate?.cancel()
         let existingApps = self.apps
 
@@ -115,15 +119,27 @@ class AppManager: ObservableObject {
             let newApps = Self.getRunningApps(existingApps: existingApps)
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                // Reconcile against the latest main-thread volumes so concurrent slider edits are never overwritten
+                let latestVolumes = Dictionary(self.apps.map { ($0.pid, $0.volume) }, uniquingKeysWith: { a, _ in a })
+                let reconciledApps = newApps.map { app -> AppVolume in
+                    var updated = app
+                    if let latest = latestVolumes[app.pid] {
+                        updated.volume = latest
+                    } else if let inMemory = VolumeStore.shared.getExplicit(app.pid) {
+                        updated.volume = Double(inMemory)
+                    }
+                    return updated
+                }
+
                 let currentPIDs = self.apps.map { $0.pid }
-                let newPIDs = newApps.map { $0.pid }
+                let newPIDs = reconciledApps.map { $0.pid }
 
                 // Only trigger SwiftUI view updates if the list of active PIDs changed
                 if currentPIDs != newPIDs {
-                    self.apps = newApps
+                    self.apps = reconciledApps
                 }
 
-                let newActive = Set(newApps.lazy
+                let newActive = Set(reconciledApps.lazy
                     .filter { AudioTapManager.shared.isAudioActive(for: $0.pid, window: 1.2) }
                     .map(\.pid))
                 if newActive != self.activePIDs {
@@ -132,7 +148,7 @@ class AppManager: ObservableObject {
 
                 // Only create taps for apps whose volume actually differs from 100%.
                 // A tap at unity gain is pure overhead (aggregate device + RT IO proc + buffer copy).
-                for app in newApps where app.volume < 0.999 {
+                for app in reconciledApps where app.volume < 0.999 {
                     AudioTapManager.shared.ensureTapCreated(for: app.pid, initialVolume: Float(app.volume))
                 }
             }
@@ -191,6 +207,8 @@ class AppManager: ObservableObject {
             let existingVolume: Double
             if let prior = priorVolumes[app.processIdentifier] {
                 existingVolume = prior
+            } else if let inMemory = VolumeStore.shared.getExplicit(app.processIdentifier) {
+                existingVolume = Double(inMemory)
             } else if let bID = bundleID, let saved = VolumeStore.shared.getPersistentVolume(for: bID) {
                 existingVolume = saved
             } else {

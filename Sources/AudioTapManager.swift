@@ -878,6 +878,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
     /// Switches the system-wide default output device to the specified hardware device.
     func setDefaultOutputDevice(_ device: AudioOutputDevice) {
+        guard currentOutputDevice?.id != device.id else { return }
         let status = writeDefaultOutputDeviceID(device.id)
         if status == noErr {
             self.currentOutputDevice = device
@@ -1056,7 +1057,10 @@ class AudioTapManager: NSObject, ObservableObject {
                 
                 if pidsToMatch.contains(processPID) || pidsToMatch.contains(procRespPID) || childPIDs.contains(processPID) {
                     matched = true
-                } else if let processApp = runningAppIndex[processPID], let procBundleID = processApp.bundleIdentifier?.lowercased(), let targetBundleID = targetBundleID, (procBundleID.hasPrefix(targetBundleID) || targetBundleID.hasPrefix(procBundleID)) {
+                } else if let processApp = runningAppIndex[processPID],
+                          let procBundleID = processApp.bundleIdentifier?.lowercased(),
+                          let targetBundleID = targetBundleID,
+                          (procBundleID == targetBundleID || procBundleID.hasPrefix(targetBundleID + ".") || targetBundleID.hasPrefix(procBundleID + ".")) {
                     matched = true
                 } else if let procPath = Self.getPath(for: processPID)?.lowercased() {
                     if let targetBundlePath = targetBundlePath, !targetBundlePath.isEmpty,
@@ -1138,7 +1142,7 @@ class AudioTapManager: NSObject, ObservableObject {
 
                     if let procPath = getPath(for: processPID) {
                         for entry in bundlePathIndex {
-                            if procPath.hasPrefix(entry.path) {
+                            if procPath == entry.path || procPath.hasPrefix(entry.path + "/") {
                                 if isHardwarePlaying {
                                     activityTracker.recordActivity(for: entry.app.processIdentifier)
                                 }

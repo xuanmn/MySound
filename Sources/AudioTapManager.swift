@@ -247,8 +247,7 @@ class AudioTapManager: NSObject, ObservableObject {
             // Skip if we already evaluated this tap (shared between helper PID and main app PID)
             guard seenTapIDs.insert(state.tapID).inserted else { continue }
             
-            // Give newly created taps a 5-second grace period before cleanup can touch them.
-            // On Intel Macs, the aggregate device IO proc can take 1-3 seconds to start receiving audio buffers.
+            //Give newly created taps a 5-second grace period before cleanup can touch them.
             let age = now - state.createdAt
             if age < 5.0 { continue }
             
@@ -257,15 +256,13 @@ class AudioTapManager: NSObject, ObservableObject {
             let isProcessAlive = (kill(pid, 0) == 0 || errno == EPERM)
             let isRunning = isAppRunning && isProcessAlive
             
-            let isAudioActive = state.control.isAudioActive(window: idleTapTeardownWindow) ||
-                                Self.activityTracker.isAudioActive(for: pid, window: idleTapTeardownWindow) ||
-                                Self.activityTracker.isAudioActive(for: mainPID, window: idleTapTeardownWindow)
+            let isAudioActive = state.control.isAudioActive(window: idleTapTeardownWindow)
             
             // Return to native un-tapped hardware output if the user restored volume to 100%
             let isAtUnity = volumeStore.get(mainPID) >= 0.999 && volumeStore.get(pid) >= 0.999
             
             if !isRunning || !isAudioActive || isAtUnity {
-                removeTap(for: pid)
+                removeTap(for: pid, keepVolume: isRunning)
             }
         }
     }
@@ -288,7 +285,8 @@ class AudioTapManager: NSObject, ObservableObject {
         // Fallback: match binary path against running application bundle paths
         if let procPath = Self.getPath(for: targetPID) {
             for app in NSWorkspace.shared.runningApplications {
-                if app.activationPolicy == .regular, let bundlePath = app.bundleURL?.path, procPath.hasPrefix(bundlePath) {
+                if app.activationPolicy == .regular, let bundlePath = app.bundleURL?.path,
+                   (procPath == bundlePath || procPath.hasPrefix(bundlePath + "/")) {
                     return app.processIdentifier
                 }
             }
@@ -320,8 +318,6 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Synchronizes listeners for 'piro' (running output) on all CoreAudio HAL process objects.
     private func syncMonitoredProcessObjects() {
         let currentProcessIDs = readProcessObjectList()
-        guard !currentProcessIDs.isEmpty else { return }
-
         let currentSet = Set(currentProcessIDs)
         let newlyAdded = currentSet.subtracting(monitoredProcessIDs)
         let removed = monitoredProcessIDs.subtracting(currentSet)
@@ -430,10 +426,9 @@ class AudioTapManager: NSObject, ObservableObject {
     /// Destroys and recreates all process taps (e.g. when switching from Speakers to Headphones).
     func recreateAllTaps() {
         let currentPIDs = Array(activeTaps.keys)
-        let savedVolumes = currentPIDs.map { ($0, volumeStore.get($0)) }
-        removeAllTaps()
-        // removeTap clears VolumeStore entries; restore them so rebuilt taps keep the user's volume.
-        for (pid, vol) in savedVolumes { volumeStore.set(pid, vol) }
+        for pid in currentPIDs {
+            removeTap(for: pid, keepVolume: true)
+        }
         for pid in currentPIDs {
             createTap(for: pid)
         }
@@ -446,10 +441,7 @@ class AudioTapManager: NSObject, ObservableObject {
             guard activeTaps[pid]?.tapID == state.tapID else { continue }
             let currentObjectIDs = getAudioObjectIDs(for: pid)
             if Set(currentObjectIDs) != Set(state.objectIDs) && !currentObjectIDs.isEmpty {
-                let aliasPIDs = activeTaps.filter { $0.value.tapID == state.tapID }.map(\.key)
-                let savedVolumes = aliasPIDs.map { ($0, volumeStore.get($0)) }
-                removeTap(for: pid)
-                for (p, vol) in savedVolumes { volumeStore.set(p, vol) }
+                removeTap(for: pid, keepVolume: true)
                 createTap(for: pid)
             }
         }
@@ -553,25 +545,14 @@ class AudioTapManager: NSObject, ObservableObject {
         // Cascading Tap Creation Strategy:
         // Stage 1: .muted + isPrivate (Optimal — silences original audio at source, routes solely through IO proc)
         // Stage 2: .muted + !isPrivate (Fallback for systems where private taps are restricted)
-        // Stage 3: .unmuted + isPrivate (Fallback for certain audio drivers)
-        // Stage 4: .unmuted + !isPrivate (Permissive fallback)
+        // Never fall back to .unmuted: routing an unmuted tap through an aggregate device
+        // outputs a delayed duplicate stream alongside the original 100% hardware stream.
         // ---------------------------------------------------------------------
         tapDescription.muteBehavior = .muted
         tapDescription.isPrivate = true
         status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         if status != noErr {
             AppLogger.shared.log("Tap creation failed (status \(status)) with muted+private")
-            tapDescription.isPrivate = false
-            status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        }
-        if status != noErr {
-            AppLogger.shared.log("Tap creation failed (status \(status)) with muted+public")
-            tapDescription.muteBehavior = .unmuted
-            tapDescription.isPrivate = true
-            status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        }
-        if status != noErr {
-            AppLogger.shared.log("Tap creation failed (status \(status)) with unmuted+private")
             tapDescription.isPrivate = false
             status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         }
@@ -719,6 +700,13 @@ class AudioTapManager: NSObject, ObservableObject {
                     }
                 }
             }
+            // Zero any trailing output buffers when the physical output has more buffers than the tap
+            for bufIdx in minBuffers..<outputs.count {
+                let outputBuf = outputs[bufIdx]
+                if let dst = outputBuf.mData {
+                    memset(dst, 0, Int(outputBuf.mDataByteSize))
+                }
+            }
             if hasActiveAudio {
                 control.recordActivity()
             }
@@ -756,7 +744,8 @@ class AudioTapManager: NSObject, ObservableObject {
     // MARK: - Tap Teardown
 
     /// Stops audio, destroys IO procs, and removes the aggregate device and tap for a given PID.
-    func removeTap(for pid: pid_t) {
+    /// - Parameter keepVolume: If `true`, retains the PID's volume in `VolumeStore` (used during idle teardown or device switches).
+    func removeTap(for pid: pid_t, keepVolume: Bool = false) {
         guard let state = activeTaps[pid] else { return }
         _ = AudioDeviceStop(state.aggregateID, state.procID)
         _ = AudioDeviceDestroyIOProcID(state.aggregateID, state.procID)
@@ -768,7 +757,9 @@ class AudioTapManager: NSObject, ObservableObject {
         let keysToRemove = activeTaps.filter { $0.value.tapID == tapID }.map(\.key)
         for key in keysToRemove {
             Self.activityTracker.remove(pid: key)
-            volumeStore.remove(key)
+            if !keepVolume {
+                volumeStore.remove(key)
+            }
             activeTaps.removeValue(forKey: key)
         }
     }

@@ -41,7 +41,7 @@ MySound gives you total control over your Mac's audio. Adjust the volume of indi
 
 ### Prerequisites
 - **macOS 14.2 (Sonoma)** or **macOS 15.0+ (Sequoia)**
-- **Apple Silicon** Mac (M1/M2/M3/M4 or newer)
+- **Apple Silicon** Mac (M1/M2/M3/M4/M5/M6 or newer)
 
 ### Installation
 

@@ -1,5 +1,5 @@
 {
-  "version": "1.8.0",
+  "version": "2.0.0",
   "downloadUrl": "https://github.com/xuanmn/MySound/releases/latest/download/MySound.zip",
-  "releaseNotes": "v1.8.0 - Re-engineered settings menu with native clean drop-down presentation, custom crisp vector status indicators for Launch at Login and System Audio Permissions, subtle hover outline on the settings gear icon, real-time app audio playback activity tracking, and refined footer version readout."
+  "releaseNotes": "v2.0.0 - Streamlined CoreAudio HAL engine with lock-free per-tap control blocks, event-driven zero-idle-wakeup process & device monitoring, persistent pre-mute volume restoration across pause/resume, hardened atomic in-app updater, and full Swift 6 strict concurrency compliance."
 }

@@ -266,6 +266,12 @@ class UpdateManager: ObservableObject {
                 }
                 
                 let newAppPath = tempExtractDir.appendingPathComponent(appName).path
+                guard let extractedBundle = Bundle(path: newAppPath),
+                      extractedBundle.executablePath != nil,
+                      (Bundle.main.bundleIdentifier == nil || extractedBundle.bundleIdentifier == Bundle.main.bundleIdentifier) else {
+                    throw NSError(domain: "UpdateError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Extracted update bundle is invalid or corrupted."])
+                }
+
                 var currentAppPath = Bundle.main.bundlePath
                 // Guard against running from a mounted DMG volume — resolve the actual
                 // installation directory by checking ~/Applications first, then /Applications.
@@ -287,17 +293,33 @@ class UpdateManager: ObservableObject {
                 
                 // Step 4: Self-replacement bash script.
                 // - Loops with `kill -0 <pid>` until current MySound process completely terminates.
-                // - Deletes existing bundle and moves new bundle into place.
-                // - Launches updated app using `open`.
+                // - Backs up existing bundle, moves new bundle into place (rolling back if mv fails),
+                //   clears quarantine & refreshes ad-hoc signature with entitlements, and launches.
                 // - Cleans up temporary extraction files.
                 // Shell-escape paths to handle directories with spaces or special characters.
                 func shellEscape(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+                let backupAppPath = currentAppPath + ".bak"
+                let entitlementsTmpPath = tempExtractDir.appendingPathComponent("entitlements.plist").path
                 let relaunchScript = """
                 while kill -0 \(pid) 2>/dev/null; do
                     sleep 0.2
                 done
-                rm -rf \(shellEscape(currentAppPath))
-                mv \(shellEscape(newAppPath)) \(shellEscape(currentAppPath))
+                rm -rf \(shellEscape(backupAppPath))
+                if [ -d \(shellEscape(currentAppPath)) ]; then
+                    mv \(shellEscape(currentAppPath)) \(shellEscape(backupAppPath))
+                fi
+                if mv \(shellEscape(newAppPath)) \(shellEscape(currentAppPath)); then
+                    rm -rf \(shellEscape(backupAppPath))
+                    xattr -rd com.apple.quarantine \(shellEscape(currentAppPath)) 2>/dev/null || true
+                    codesign -d --entitlements - \(shellEscape(currentAppPath)) > \(shellEscape(entitlementsTmpPath)) 2>/dev/null || true
+                    if [ -s \(shellEscape(entitlementsTmpPath)) ]; then
+                        codesign --force --deep --sign - --entitlements \(shellEscape(entitlementsTmpPath)) \(shellEscape(currentAppPath)) 2>/dev/null || true
+                    else
+                        codesign --force --deep --sign - \(shellEscape(currentAppPath)) 2>/dev/null || true
+                    fi
+                elif [ -d \(shellEscape(backupAppPath)) ]; then
+                    mv \(shellEscape(backupAppPath)) \(shellEscape(currentAppPath))
+                fi
                 open \(shellEscape(currentAppPath))
                 rm -rf \(shellEscape(tempExtractDir.path))
                 rm -f \(shellEscape(tempZipURL.path))
@@ -368,7 +390,7 @@ class UpdateManager: ObservableObject {
 
 /// `DownloadProgressDelegate` tracks download bytes and converts them to a 0.0...1.0 fraction.
 /// Used by `performInAppUpdate()` for efficient streaming without accumulating bytes in RAM.
-class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
     private let progressHandler: @Sendable (Double) -> Void
 
     init(progressHandler: @escaping @Sendable (Double) -> Void) {

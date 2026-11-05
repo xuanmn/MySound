@@ -270,6 +270,7 @@ struct VolumeControlView: View {
     @State private var isMasterMuteHovered: Bool = false
     @State private var hasPermission: Bool = true
     @State private var permissionCheckTimer: Timer?
+    @State private var isPopoverVisible: Bool = false
 
     // CoreAudio property listener blocks for real-time master volume sync
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
@@ -295,6 +296,7 @@ struct VolumeControlView: View {
                 let pid = appManager.apps[i].pid
                 let bundleID = appManager.apps[i].bundleIdentifier
                 let restored = savedAppVolumes[pid]
+                    ?? tapManager.volumeStore.getPreMuteVolume(pid)
                     ?? (bundleID.flatMap { tapManager.volumeStore.getPersistentVolume(for: $0) })
                     ?? 1.0
                 appManager.apps[i].volume = restored > 0.001 ? restored : 1.0
@@ -306,6 +308,7 @@ struct VolumeControlView: View {
                 let pid = appManager.apps[i].pid
                 if appManager.apps[i].volume > 0.001 {
                     savedAppVolumes[pid] = appManager.apps[i].volume
+                    tapManager.volumeStore.setPreMuteVolume(pid, appManager.apps[i].volume)
                 }
                 appManager.apps[i].volume = 0
                 tapManager.setVolume(for: pid, volume: 0)
@@ -465,6 +468,7 @@ struct VolumeControlView: View {
             .padding(.bottom, 6)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
             .onAppear {
+                isPopoverVisible = true
                 masterVolume = Double(tapManager.getSystemVolume())
                 if masterVolume > 0.001 {
                     previousMasterVolume = masterVolume
@@ -479,6 +483,7 @@ struct VolumeControlView: View {
                 }
             }
             .onDisappear {
+                isPopoverVisible = false
                 // Remove listeners when the popover closes to conserve system resources
                 removeVolumeListeners()
             }
@@ -588,12 +593,13 @@ struct VolumeControlView: View {
                 // Re-check permissions every 3 seconds only if permission is missing
                 permissionCheckTimer?.invalidate()
                 if !hasPermission {
-                    permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { timer in
+                    permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
                         Task { @MainActor in
                             let granted = AudioTapManager.hasAudioCapturePermission()
                             hasPermission = granted
                             if granted {
-                                timer.invalidate()
+                                permissionCheckTimer?.invalidate()
+                                permissionCheckTimer = nil
                             }
                         }
                     }
@@ -698,9 +704,11 @@ struct VolumeControlView: View {
                 }
             }
         }
-        // Re-register volume listeners when the default output device changes
+        // Re-register volume listeners when the default output device changes while popover is open
         .onChange(of: tapManager.currentOutputDevice?.id) { _, _ in
-            setupVolumeListeners()
+            if isPopoverVisible {
+                setupVolumeListeners()
+            }
             masterVolume = Double(tapManager.getSystemVolume())
         }
     }
@@ -712,8 +720,11 @@ struct VolumeControlView: View {
             ForEach($appManager.apps) { $app in
                 AppVolumeRow(app: $app) { newVolume in
                     tapManager.setVolume(for: app.pid, volume: newVolume)
-                    if let bundleID = app.bundleIdentifier {
-                        tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
+                    if newVolume > 0.001 {
+                        tapManager.volumeStore.setPreMuteVolume(app.pid, Double(newVolume))
+                        if let bundleID = app.bundleIdentifier {
+                            tapManager.volumeStore.setPersistentVolume(for: bundleID, volume: Double(newVolume))
+                        }
                     }
                 }
             }
@@ -1092,9 +1103,13 @@ struct AppVolumeRow: View {
                 Button(action: {
                     if app.volume > 0.001 {
                         previousVolume = app.volume
+                        VolumeStore.shared.setPreMuteVolume(app.pid, app.volume)
                         app.volume = 0
                     } else {
-                        app.volume = previousVolume > 0.001 ? previousVolume : 0.5
+                        let restored = VolumeStore.shared.getPreMuteVolume(app.pid)
+                            ?? (app.bundleIdentifier.flatMap { VolumeStore.shared.getPersistentVolume(for: $0) })
+                            ?? previousVolume
+                        app.volume = restored > 0.001 ? restored : 0.5
                     }
                 }) {
                     Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -1151,6 +1166,7 @@ struct AppVolumeRow: View {
             .onAppear {
                 if app.volume > 0.001 {
                     previousVolume = app.volume
+                    VolumeStore.shared.setPreMuteVolume(app.pid, app.volume)
                 }
             }
         }
@@ -1235,9 +1251,9 @@ struct EditableVolumeText: View {
                         .frame(width: 24)
                         .focused($isFocused)
                         .onChange(of: textInput) { _, newValue in
-                            let digits = newValue.filter { $0.isNumber }
-                            if digits != newValue {
-                                textInput = String(digits.prefix(3))
+                            let sanitized = String(newValue.filter { $0.isNumber }.prefix(3))
+                            if sanitized != newValue {
+                                textInput = sanitized
                             }
                         }
                         .onSubmit {

@@ -43,8 +43,8 @@ killall MySound 2>/dev/null || true
 
 ### Testing & Verification
 ```bash
-# Run unit test suite
-swiftc -O -o build/test_runner Sources/VolumeStore.swift Tools/test_runner.swift && ./build/test_runner
+# Run unit test suite (use -Onone so assert() statements are evaluated)
+swiftc -Onone -o build/test_runner Sources/VolumeStore.swift Tools/test_runner.swift && ./build/test_runner
 ```
 
 ### Debugging & Diagnostics
@@ -85,7 +85,7 @@ MySound/
    - Mutes default app output and routes intercepted buffers into a virtual Aggregate Device targeting the selected physical output.
    - Applies volume gain scaling on raw PCM buffers inside the real-time audio callback using `vDSP_vsmul`.
 2. **App Discovery & UI State (`VolumeControlView.swift` / `AppManager`)**:
-   - `AppManager` polls active audio processes using `NSWorkspace` notifications and a 1.5s interval timer.
+   - `AppManager` monitors active audio processes using event-driven CoreAudio HAL (`'piro'`) & `NSWorkspace` notifications, plus a 2.0s timer active only while the popover is visible.
    - State flows down to SwiftUI view hierarchy via `ObservableObject` singletons (`AudioTapManager.shared`, `AppManager.shared`, `UpdateManager.shared`).
 3. **Distribution & Version Sync (`version.json` + `build.sh`)**:
    - `version.json` defines the canonical version string. `build.sh` extracts this version at compile time to stamp `Info.plist`.
@@ -100,10 +100,9 @@ MySound/
 - **Real-Time Audio Safety Rules (`AudioTapManager.swift`):**
   - The CoreAudio IO callback runs on a high-priority real-time thread.
   - **NEVER** allocate memory (`malloc`, Swift `Array`/`String` copies), call Objective-C runtime methods, invoke Swift actor hops, or perform blocking locks in the audio callback.
-  - Use `VolumeStore` (`os_unfair_lock`) only for microsecond scalar lookups.
+  - Use `TapControl` for lock-free per-tap gain and activity reads/writes in the audio callback, and `VolumeStore` (`os_unfair_lock`) for thread-safe state synchronization.
 - **Error Handling & Resilience:**
   - Check CoreAudio `OSStatus` codes explicitly; log failures via `AppLogger.shared.log(...)` and provide graceful fallbacks.
-  - In `build.sh`, maintain graceful dual-architecture compilation fallbacks if one architecture toolchain fails.
   - In `UpdateManager.swift`, try unmetered static `version.json` first before falling back to rate-limited GitHub REST API.
 - **Formatting & Style:**
   - Structure all Swift files with clear `// MARK: - <Section Name>` dividers.

@@ -26,15 +26,16 @@ final class AppLogger: @unchecked Sendable {
         }
     }
 
-    /// Writes a timestamped log message to NSLog (synchronously) and the log file (asynchronously).
+    /// Writes a timestamped log message to NSLog and the log file asynchronously on a background serial queue.
     func log(_ message: String) {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
-        let logLine = "[\(timestamp)] \(message)\n"
-        // NSLog fires immediately on the calling thread for console visibility
-        NSLog("MySound: %@", message)
-        guard let url = logFileURL, let data = logLine.data(using: .utf8) else { return }
-        // Dispatch file I/O asynchronously so callers return immediately
+        let now = Date()
+        let url = logFileURL
+        // Dispatch formatting, NSLog, and file I/O asynchronously so callers return immediately
         logQueue.async {
+            let timestamp = DateFormatter.localizedString(from: now, dateStyle: .short, timeStyle: .medium)
+            let logLine = "[\(timestamp)] \(message)\n"
+            NSLog("MySound: %@", message)
+            guard let url = url, let data = logLine.data(using: .utf8) else { return }
             // Rotate log file if it exceeds 5MB — preserve one backup instead of deleting
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
                let size = attrs[.size] as? UInt64, size > 5_000_000 {

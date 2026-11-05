@@ -20,7 +20,8 @@ APP_PATH="${INSTALL_DIR}/${APP_NAME}.app"
 REPO="xuanmn/MySound"
 
 TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+MOUNT_DIR=""
+trap 'if [ -n "$MOUNT_DIR" ]; then hdiutil detach "$MOUNT_DIR" -quiet 2>/dev/null || true; rm -rf "$MOUNT_DIR"; fi; rm -rf "$TMP_DIR"' EXIT
 
 echo "⬇️  Downloading latest MySound build..."
 DMG_PATH="${TMP_DIR}/MySound.dmg"

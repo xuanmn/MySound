@@ -59,7 +59,9 @@ public final class McpServer: @unchecked Sendable {
 
         default:
             transport.log("Unhandled method: \(request.method)")
-            sendError(id: request.id, error: .methodNotFound)
+            if request.id != nil {
+                sendError(id: request.id, error: .methodNotFound)
+            }
         }
     }
 

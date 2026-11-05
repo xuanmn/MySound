@@ -23,6 +23,7 @@ public struct CoreAudioRegistry: Sendable {
             returnInfo: "Initializes a tap description instance to be passed to AudioHardwareCreateProcessTap.",
             requiredEntitlements: [
                 "System Audio Recording TCC Permission",
+                "com.apple.security.system-audio-capture",
                 "com.apple.security.device.audio-input",
                 "App Sandbox Disabled (or com.apple.security.temporary-exception.audio-device-access)"
             ],
@@ -51,6 +52,7 @@ public struct CoreAudioRegistry: Sendable {
             returnInfo: "Returns `noErr` (0) on success, or an OSStatus error code (e.g. 560227702, kAudioHardwareIllegalOperationError).",
             requiredEntitlements: [
                 "System Audio Recording TCC Permission",
+                "com.apple.security.system-audio-capture",
                 "com.apple.security.device.audio-input"
             ],
             realTimeSafety: "Must be called on a setup/coordination thread. Blocking IPC call to coreaudiod.",
@@ -341,6 +343,31 @@ public struct CoreAudioRegistry: Sendable {
                 "Verify frame count matches mBuffers[channel].mDataByteSize / MemoryLayout<Float>.size."
             ],
             relatedSymbols: ["vDSP_maxv", "AudioBufferList"]
+        ),
+
+        AudioApiEntity(
+            symbol: "vDSP_maxv",
+            kind: .function,
+            framework: "Accelerate (vDSP)",
+            header: "<Accelerate/Accelerate.h>",
+            availability: "macOS 10.0+",
+            isPrivateSPI: false,
+            signature: "func vDSP_maxv(_ __A: UnsafePointer<Float>, _ __IA: vDSP_Stride, _ __C: UnsafeMutablePointer<Float>, _ __N: vDSP_Length)",
+            summary: "Computes the maximum value in a single-precision floating-point vector using SIMD hardware instructions. Used with vDSP_maxmgv for fast real-time silence and peak activity detection.",
+            parameters: [
+                ParameterDoc(name: "__A", type: "UnsafePointer<Float>", description: "Input audio buffer sample array."),
+                ParameterDoc(name: "__IA", type: "vDSP_Stride", description: "Stride for input vector (usually 1)."),
+                ParameterDoc(name: "__C", type: "UnsafeMutablePointer<Float>", description: "Output pointer receiving the maximum sample value."),
+                ParameterDoc(name: "__N", type: "vDSP_Length", description: "Number of audio samples to inspect.")
+            ],
+            returnInfo: "Writes the maximum sample value into `__C` with zero heap allocations.",
+            requiredEntitlements: [],
+            realTimeSafety: "Fully real-time safe. Deterministic execution time, SIMD hardware accelerated, zero allocation, non-blocking.",
+            commonPitfalls: [
+                "Ensure `__N > 0` before calling; passing 0 frames leaves `__C` unmodified or writes `-Float.infinity`.",
+                "For magnitude-based silence detection across bipolar AC audio signals, prefer `vDSP_maxmgv` or inspect abs values."
+            ],
+            relatedSymbols: ["vDSP_vsmul", "AudioBufferList"]
         )
     ]
 }

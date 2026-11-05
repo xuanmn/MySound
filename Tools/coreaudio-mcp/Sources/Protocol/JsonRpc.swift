@@ -67,6 +67,10 @@ public struct AnyCodable: Codable, @unchecked Sendable, Equatable {
             return l == r
         case (let l as String, let r as String):
             return l == r
+        case (let l as [Any], let r as [Any]):
+            return l.count == r.count && zip(l, r).allSatisfy { AnyCodable($0) == AnyCodable($1) }
+        case (let l as [String: Any], let r as [String: Any]):
+            return l.count == r.count && l.allSatisfy { k, v in r[k].map { AnyCodable(v) == AnyCodable($0) } ?? false }
         default:
             return false
         }

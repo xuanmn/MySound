@@ -207,10 +207,9 @@ public struct ToolHandlers: Sendable {
         }
 
         report += "\n## Remediation Guidelines\n\n"
-        let triggeredRules = Array(Set(violations.map { $0.rule.id }))
+        let triggeredRuleIds = Set(violations.map { $0.rule.id })
 
-        for ruleId in triggeredRules {
-            guard let rule = SafetyRegistry.allRules.first(where: { $0.id == ruleId }) else { continue }
+        for rule in SafetyRegistry.allRules where triggeredRuleIds.contains(rule.id) {
             report += "### \(rule.name)\n"
             report += "- **Why it fails**: \(rule.explanation)\n"
             report += "- **How to fix**: \(rule.remedy)\n\n"

@@ -6,42 +6,38 @@ public struct RecipesRegistry: Sendable {
             id: "process_tap_setup",
             title: "CoreAudio Process Tap Interception (macOS 14.2+)",
             category: "Process Taps",
-            summary: "Configures CATapDescription with target process IDs and acquires an AudioObjectID tap from the HAL.",
+            summary: "Configures CATapDescription with target CoreAudio process object IDs and acquires an AudioObjectID tap from the HAL.",
             code: #"""
 import Foundation
 import CoreAudio
 
-// 1. Dynamic Class Lookup for Private CATapDescription SPI
-guard let tapDescClass = NSClassFromString("CATapDescription") as? NSObject.Type else {
-    fatalError("CATapDescription SPI is not available on this macOS version (requires macOS 14.2+).")
-}
+// 1. Configure CATapDescription targeting the process's CoreAudio AudioObjectIDs
+let objectIDs: [AudioObjectID] = [/* process AudioObjectIDs from kAudioHardwarePropertyProcessObjectList */]
+let tapDesc = CATapDescription(stereoMixdownOfProcesses: objectIDs)
+tapDesc.uuid = UUID()
+tapDesc.name = "MySound-Tap"
+tapDesc.muteBehavior = .muted
+tapDesc.isPrivate = true
 
-// 2. Initialize CATapDescription targeting specific PID
-let tapDesc = tapDescClass.init()
-let targetPID: pid_t = 12345 // Target application PID
-tapDesc.setValue([targetPID], forKey: "processes")
-tapDesc.setValue(false, forKey: "mono")
-tapDesc.setValue(false, forKey: "mixdown")
-
-// 3. Create Process Tap via HAL
+// 2. Create Process Tap via HAL
 var tapID = AudioObjectID(kAudioObjectUnknown)
 let status = AudioHardwareCreateProcessTap(tapDesc, &tapID)
 
 guard status == noErr else {
     print("Failed to create process tap: \(status)")
-    // Status 560227702 (0x21646576) indicates missing System Audio Recording TCC permission.
+    // Status 560227702 / -66753 indicates missing System Audio Recording TCC permission.
     throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
 }
 
 print("Created Process Tap AudioObjectID: \(tapID)")
 
-// 4. Teardown when finished
+// 3. Teardown when finished
 // AudioHardwareDestroyProcessTap(tapID)
 """#,
             keyTakeaways: [
                 "Requires 'System Audio Recording' TCC permission and disabled App Sandbox in Entitlements.plist.",
-                "Always destroy the tap with AudioHardwareDestroyProcessTap when the target app quits.",
-                "Tapping an app's audio stream prevents it from reaching the hardware output directly; you must route it through an aggregate device or playback stream."
+                "Pass CoreAudio process AudioObjectIDs (from kAudioHardwarePropertyProcessObjectList), not raw Unix PIDs.",
+                "Use .muted so original process audio is silenced at the source and routed solely through your aggregate device IO proc."
             ]
         ),
 
@@ -49,27 +45,29 @@ print("Created Process Tap AudioObjectID: \(tapID)")
             id: "aggregate_device_routing",
             title: "Aggregate Audio Device Creation & Output Routing",
             category: "Device Routing",
-            summary: "Combines a process tap subdevice with a physical output hardware device into an Aggregate Device.",
+            summary: "Combines a process tap sub-tap with a physical output hardware sub-device into an Aggregate Device.",
             code: #"""
 import Foundation
 import CoreAudio
 
 func createAggregateDevice(tapUID: String, outputUID: String) throws -> AudioDeviceID {
-    let aggregateUID = "com.mysound.aggregate.\(UUID().uuidString)"
-    let aggregateName = "MySound Virtual Output"
-
-    let subDevices: [[String: Any]] = [
-        [kAudioSubDeviceUIDKey: outputUID],
-        [kAudioSubDeviceUIDKey: tapUID]
-    ]
+    let aggregateUID = UUID().uuidString
+    let aggregateName = "MySound-Tap"
 
     let description: [String: Any] = [
-        kAudioAggregateDeviceNameKey: aggregateName,
-        kAudioAggregateDeviceUIDKey: aggregateUID,
-        kAudioAggregateDeviceMainSubDeviceKey: outputUID,
-        kAudioAggregateDeviceSubDeviceListKey: subDevices,
-        kAudioAggregateDeviceIsPrivateKey: true,
-        kAudioAggregateDeviceIsStackedKey: false
+        kAudioAggregateDeviceNameKey: aggregateName as NSString,
+        kAudioAggregateDeviceUIDKey: aggregateUID as NSString,
+        kAudioAggregateDeviceMainSubDeviceKey: outputUID as NSString,
+        kAudioAggregateDeviceClockDeviceKey: outputUID as NSString,
+        kAudioAggregateDeviceIsPrivateKey: kCFBooleanTrue as Any,
+        kAudioAggregateDeviceIsStackedKey: kCFBooleanTrue as Any,
+        kAudioAggregateDeviceTapAutoStartKey: kCFBooleanTrue as Any,
+        kAudioAggregateDeviceSubDeviceListKey: [
+            [kAudioSubDeviceUIDKey: outputUID as NSString, kAudioSubDeviceDriftCompensationKey: kCFBooleanTrue as Any]
+        ] as NSArray,
+        kAudioAggregateDeviceTapListKey: [
+            [kAudioSubTapUIDKey: tapUID as NSString]
+        ] as NSArray
     ]
 
     var aggregateDeviceID: AudioDeviceID = 0

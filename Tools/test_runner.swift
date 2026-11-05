@@ -28,9 +28,20 @@ func testDictionaryCleanupSafety() {
 func testVolumeStoreLocking() {
     print("[TEST] testVolumeStoreLocking...")
     let store = VolumeStore()
+    assert(store.getExplicit(1234) == nil, "Explicit volume should be nil before setting")
     store.set(1234, 0.75)
+    assert(abs((store.getExplicit(1234) ?? 0) - 0.75) < 0.001, "Explicit volume should match 0.75")
     assert(abs(store.get(1234) - 0.75) < 0.001, "Volume should match 0.75")
+
+    // Verify pre-mute volume tracking and ignore of 0.0
+    assert(store.getPreMuteVolume(1234) == nil, "Pre-mute volume should be nil initially")
+    store.setPreMuteVolume(1234, 0.8)
+    store.setPreMuteVolume(1234, 0.0) // Muting should not overwrite pre-mute volume
+    assert(abs((store.getPreMuteVolume(1234) ?? 0) - 0.8) < 0.001, "Pre-mute volume should remain 0.8")
+
     store.remove(1234)
+    assert(store.getExplicit(1234) == nil, "Explicit volume should be nil after removal")
+    assert(store.getPreMuteVolume(1234) == nil, "Pre-mute volume should be nil after removal")
     assert(abs(store.get(1234) - 1.0) < 0.001, "Default volume should be 1.0 after removal")
     print("  ✅ Passed testVolumeStoreLocking")
 }

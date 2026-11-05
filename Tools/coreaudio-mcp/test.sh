@@ -60,4 +60,11 @@ RESP7=$(send_request "$SAFE_REQ")
 echo "$RESP7" | grep -q "PASSED AUDIT"
 echo "  Passed."
 
-echo "=== All 7 Smoke Tests Passed Successfully! ==="
+echo "Test 8: JSON-RPC notification produces no response & vDSP_maxv exists..."
+RESP8_NOTIF=$(send_request '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}')
+[ -z "$RESP8_NOTIF" ]
+RESP8_MAXV=$(send_request '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"get_api_details","arguments":{"symbol":"vDSP_maxv"}}}')
+echo "$RESP8_MAXV" | grep -q "vDSP_maxv"
+echo "  Passed."
+
+echo "=== All 8 Smoke Tests Passed Successfully! ==="

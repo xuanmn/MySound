@@ -15,7 +15,7 @@ public struct CoreAudioRegistry: Sendable {
             signature: "@objc(CATapDescription) public class CATapDescription : NSObject",
             summary: "Describes an audio process tap used to intercept per-application audio streams directly from the CoreAudio HAL.",
             parameters: [
-                ParameterDoc(name: "processes", type: "[NSRunningApplication] / [pid_t]", description: "The target applications or process identifiers whose audio output will be tapped."),
+                ParameterDoc(name: "processes", type: "[AudioObjectID]", description: "The target CoreAudio process object IDs (from kAudioHardwarePropertyProcessObjectList) whose audio output will be tapped."),
                 ParameterDoc(name: "mono", type: "Bool", description: "If true, downmixes intercepted multi-channel audio to mono."),
                 ParameterDoc(name: "mixdown", type: "Bool", description: "If true, applies system mixdown to the tapped stream."),
                 ParameterDoc(name: "privateTapDictionary", type: "[String: Any]", description: "Internal dictionary configuring process IDs, UUIDs, and tap isolation flags.")
@@ -303,7 +303,7 @@ public struct CoreAudioRegistry: Sendable {
             header: "<CoreAudio/AudioHardware.h>",
             availability: "macOS 10.0+",
             isPrivateSPI: false,
-            signature: "var kAudioDevicePropertyVolumeScalar: AudioObjectPropertySelector { get } // 'vmuc'",
+            signature: "var kAudioDevicePropertyVolumeScalar: AudioObjectPropertySelector { get } // 'volm'",
             summary: "Property selector on an AudioDeviceID representing linear hardware master volume as a float between 0.0 and 1.0.",
             parameters: [],
             returnInfo: "Property data is Float32.",

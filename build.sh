@@ -27,12 +27,18 @@ fi
 if [ -f "Tools/test_runner.swift" ]; then
     echo "Running unit tests..."
     # -Onone keeps assert() active; -O would strip every assertion and the tests could never fail.
-    swiftc -Onone "${SDK_FLAGS[@]}" -o "${BUILD_DIR}/test_runner" Sources/VolumeStore.swift Tools/test_runner.swift -target arm64-apple-macos14.2
+    swiftc -Onone -swift-version 6 -strict-concurrency=complete "${SDK_FLAGS[@]}" \
+        -o "${BUILD_DIR}/test_runner" \
+        Sources/VolumeStore.swift \
+        Sources/AudioOutputDevice.swift \
+        Sources/UpdateManager.swift \
+        Tools/test_runner.swift \
+        -target arm64-apple-macos14.2
     "${BUILD_DIR}/test_runner"
 fi
 
-echo "Compiling Swift files (Apple Silicon arm64 with WMO & M1 CPU tuning)..."
-swiftc -O -whole-module-optimization -target-cpu apple-m1 "${SDK_FLAGS[@]}" \
+echo "Compiling Swift files (Apple Silicon arm64 with WMO, Swift 6 strict concurrency & M1 CPU tuning)..."
+swiftc -O -whole-module-optimization -swift-version 6 -strict-concurrency=complete -target-cpu apple-m1 "${SDK_FLAGS[@]}" \
     -o "${MACOS_DIR}/${APP_NAME}" \
     Sources/App.swift \
     Sources/AppLogger.swift \

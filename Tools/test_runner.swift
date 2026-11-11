@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio
 
 // Test harness for MySound bug fixes and safety checks
 
@@ -100,6 +101,37 @@ func testTapControl() {
     print("  ✅ Passed testTapControl")
 }
 
+func testAudioOutputDeviceIconsAndTransport() {
+    print("[TEST] testAudioOutputDeviceIconsAndTransport...")
+    assert(AudioDeviceTransportType.from(fourCC: kAudioDeviceTransportTypeBuiltIn) == .builtIn)
+    assert(AudioDeviceTransportType.from(fourCC: kAudioDeviceTransportTypeBluetooth) == .bluetooth)
+    assert(AudioDeviceTransportType.from(fourCC: kAudioDeviceTransportTypeUSB) == .usb)
+    assert(AudioDeviceTransportType.from(fourCC: kAudioDeviceTransportTypeVirtual) == .virtual)
+    assert(AudioDeviceTransportType.from(fourCC: 0) == .unknown)
+
+    let airpods = AudioOutputDevice(id: 1, name: "User's AirPods Pro", uid: "bt-1", transportType: .bluetooth)
+    assert(airpods.iconName == "airpodspro", "AirPods Pro should resolve to airpodspro icon")
+
+    let airpodsMax = AudioOutputDevice(id: 2, name: "AirPod Max", uid: "bt-2", transportType: .bluetooth)
+    assert(airpodsMax.iconName == "headphones", "AirPod Max should resolve to headphones icon")
+
+    let macbookSpeakers = AudioOutputDevice(id: 3, name: "MacBook Pro Speakers", uid: "builtin-1", transportType: .builtIn)
+    assert(macbookSpeakers.iconName == "laptopcomputer", "MacBook speakers should resolve to laptopcomputer icon")
+
+    let macMiniSpeakers = AudioOutputDevice(id: 4, name: "Mac mini Speakers", uid: "builtin-2", transportType: .builtIn)
+    assert(macMiniSpeakers.iconName == "desktopcomputer", "Mac mini speakers should resolve to desktopcomputer icon")
+    print("  ✅ Passed testAudioOutputDeviceIconsAndTransport")
+}
+
+func testUpdateVersionComparison() {
+    print("[TEST] testUpdateVersionComparison...")
+    assert(UpdateManager.isVersionNewer(newVersion: "2.0.0", currentVersion: "1.8.0"), "2.0.0 > 1.8.0")
+    assert(UpdateManager.isVersionNewer(newVersion: "v2.0.1", currentVersion: "2.0"), "v2.0.1 > 2.0")
+    assert(!UpdateManager.isVersionNewer(newVersion: "2.0", currentVersion: "2.0.0"), "2.0 == 2.0.0")
+    assert(!UpdateManager.isVersionNewer(newVersion: "1.8.0", currentVersion: "2.0.0"), "1.8.0 < 2.0.0")
+    print("  ✅ Passed testUpdateVersionComparison")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -109,6 +141,8 @@ struct TestRunner {
         testAudioActivityTrackerPrune()
         testVolumeStorePersistence()
         testTapControl()
+        testAudioOutputDeviceIconsAndTransport()
+        testUpdateVersionComparison()
         print("\nAll unit tests passed successfully!")
     }
 }

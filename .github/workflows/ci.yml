@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & Verify Universal Binary
+    name: Build & Verify Apple Silicon Binary
     runs-on: macos-15
 
     steps:
@@ -37,6 +37,9 @@ jobs:
 
       - name: Compile and Package MySound
         run: ./build.sh
+
+      - name: Build and Smoke-Test CoreAudio MCP Server
+        run: ./Tools/coreaudio-mcp/test.sh
 
       - name: Verify generated artifacts & architecture
         run: |

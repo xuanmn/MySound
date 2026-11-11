@@ -51,7 +51,7 @@ class AppManager: ObservableObject {
     @Published var activePIDs: Set<pid_t> = []
 
     /// Optional refresh timer active ONLY while the popover window is open to animate live waveform states.
-    private var visibleTimer: Timer?
+    nonisolated(unsafe) private var visibleTimer: Timer?
 
     init() {
         // Defer initial app discovery to an async task on the main actor to avoid
@@ -264,7 +264,6 @@ struct VolumeControlView: View {
     @State private var masterVolume: Double = 0.5
     @State private var previousMasterVolume: Double = 0.5
     @State private var isLaunchAtLogin: Bool = false
-    @State private var savedAppVolumes: [Int32: Double] = [:]
     @State private var isQuitHovered: Bool = false
     @State private var isGearHovered: Bool = false
     @State private var isMasterMuteHovered: Bool = false
@@ -272,8 +271,10 @@ struct VolumeControlView: View {
     @State private var permissionCheckTimer: Timer?
     @State private var isPopoverVisible: Bool = false
 
-    // CoreAudio property listener blocks for real-time master volume sync
+    // CoreAudio property listener blocks & addresses for real-time master volume sync
+    @State private var volumeListenerAddress: AudioObjectPropertyAddress?
     @State private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
+    @State private var muteListenerAddress: AudioObjectPropertyAddress?
     @State private var muteListenerBlock: AudioObjectPropertyListenerBlock?
     /// Tracks the device ID on which volume/mute listeners were registered,
     /// so removal targets the correct device even after an output switch.
@@ -295,8 +296,7 @@ struct VolumeControlView: View {
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
                 let bundleID = appManager.apps[i].bundleIdentifier
-                let restored = savedAppVolumes[pid]
-                    ?? tapManager.volumeStore.getPreMuteVolume(pid)
+                let restored = tapManager.volumeStore.getPreMuteVolume(pid)
                     ?? (bundleID.flatMap { tapManager.volumeStore.getPersistentVolume(for: $0) })
                     ?? 1.0
                 appManager.apps[i].volume = restored > 0.001 ? restored : 1.0
@@ -307,7 +307,6 @@ struct VolumeControlView: View {
             for i in 0..<appManager.apps.count {
                 let pid = appManager.apps[i].pid
                 if appManager.apps[i].volume > 0.001 {
-                    savedAppVolumes[pid] = appManager.apps[i].volume
                     tapManager.volumeStore.setPreMuteVolume(pid, appManager.apps[i].volume)
                 }
                 appManager.apps[i].volume = 0
@@ -891,6 +890,7 @@ struct VolumeControlView: View {
             volAddr.mElement = 1
         }
         AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volAddr, DispatchQueue.main, block)
+        volumeListenerAddress = volAddr
         volumeListenerBlock = block
 
         // Mute property listener
@@ -903,6 +903,7 @@ struct VolumeControlView: View {
             muteAddr.mElement = 1
         }
         AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddr, DispatchQueue.main, block)
+        muteListenerAddress = muteAddr
         muteListenerBlock = block
     }
 
@@ -911,31 +912,14 @@ struct VolumeControlView: View {
         let deviceID = listenedDeviceID
         guard deviceID != 0 else { return }
 
-        if let block = volumeListenerBlock {
-            var volAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            // Remove from Main element; if the device exposes channel 1 instead, remove there too
+        if var volAddr = volumeListenerAddress, let block = volumeListenerBlock {
             AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
-            volAddr.mElement = 1
-            if AudioObjectHasProperty(deviceID, &volAddr) {
-                AudioObjectRemovePropertyListenerBlock(deviceID, &volAddr, DispatchQueue.main, block)
-            }
+            volumeListenerAddress = nil
             volumeListenerBlock = nil
         }
-        if let block = muteListenerBlock {
-            var muteAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyMute,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain
-            )
+        if var muteAddr = muteListenerAddress, let block = muteListenerBlock {
             AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
-            muteAddr.mElement = 1
-            if AudioObjectHasProperty(deviceID, &muteAddr) {
-                AudioObjectRemovePropertyListenerBlock(deviceID, &muteAddr, DispatchQueue.main, block)
-            }
+            muteListenerAddress = nil
             muteListenerBlock = nil
         }
         listenedDeviceID = 0

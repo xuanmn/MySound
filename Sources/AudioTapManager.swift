@@ -191,21 +191,21 @@ class AudioTapManager: NSObject, ObservableObject {
     }
 
     // MARK: - Listener Addresses & Blocks
-    private var processListListenerAddress: AudioObjectPropertyAddress?
-    private var processListListenerBlock: AudioObjectPropertyListenerBlock?
-    private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
-    private var outputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
-    private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
-    private var hardwareDevicesListenerBlock: AudioObjectPropertyListenerBlock?
+    nonisolated(unsafe) private var processListListenerAddress: AudioObjectPropertyAddress?
+    nonisolated(unsafe) private var processListListenerBlock: AudioObjectPropertyListenerBlock?
+    nonisolated(unsafe) private var outputDeviceListenerAddress: AudioObjectPropertyAddress?
+    nonisolated(unsafe) private var outputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    nonisolated(unsafe) private var hardwareDevicesListenerAddress: AudioObjectPropertyAddress?
+    nonisolated(unsafe) private var hardwareDevicesListenerBlock: AudioObjectPropertyListenerBlock?
 
     /// Active process AudioObjectIDs currently monitored for output state changes ('piro').
-    private var monitoredProcessIDs: Set<AudioObjectID> = []
-    private var processOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    nonisolated(unsafe) private var monitoredProcessIDs: Set<AudioObjectID> = []
+    nonisolated(unsafe) private var processOutputListenerBlock: AudioObjectPropertyListenerBlock?
 
     /// Callback invoked when any application starts or stops producing sound.
     var onProcessAudioStateChanged: (@MainActor () -> Void)?
 
-    private var cleanupTimer: Timer?
+    nonisolated(unsafe) private var cleanupTimer: Timer?
 
     override init() {
         super.init()
@@ -256,12 +256,14 @@ class AudioTapManager: NSObject, ObservableObject {
             let isProcessAlive = (kill(pid, 0) == 0 || errno == EPERM)
             let isRunning = isAppRunning && isProcessAlive
             
-            let isAudioActive = state.control.isAudioActive(window: idleTapTeardownWindow)
+            let isStreamRunning = state.objectIDs.contains { Self.isProcessRunningOutput($0) }
+            let isAudioActive = state.control.isAudioActive(window: idleTapTeardownWindow) || isStreamRunning
+            let isMuted = volumeStore.get(mainPID) <= 0.001 || volumeStore.get(pid) <= 0.001
             
             // Return to native un-tapped hardware output if the user restored volume to 100%
             let isAtUnity = volumeStore.get(mainPID) >= 0.999 && volumeStore.get(pid) >= 0.999
             
-            if !isRunning || !isAudioActive || isAtUnity {
+            if !isRunning || (!isAudioActive && !isMuted) || isAtUnity {
                 removeTap(for: pid, keepVolume: isRunning)
             }
         }
@@ -327,7 +329,21 @@ class AudioTapManager: NSObject, ObservableObject {
         if processOutputListenerBlock == nil {
             processOutputListenerBlock = { [weak self] _, _ in
                 Task { @MainActor [weak self] in
-                    self?.onProcessAudioStateChanged?()
+                    guard let self = self else { return }
+                    // Immediately re-establish taps for any resuming process with a saved non-unity volume
+                    // before waiting for the 50ms UI debounce in AppManager.updateApps().
+                    for procObjID in self.monitoredProcessIDs where Self.isProcessRunningOutput(procObjID) {
+                        if let pid = readProcessPID(procObjID) {
+                            let mainPID = self.getMainAppPID(for: pid)
+                            if self.activeTaps[mainPID] == nil && self.activeTaps[pid] == nil {
+                                let vol = min(self.volumeStore.get(mainPID), self.volumeStore.get(pid))
+                                if vol < 0.999 {
+                                    self.ensureTapCreated(for: mainPID, initialVolume: vol)
+                                }
+                            }
+                        }
+                    }
+                    self.onProcessAudioStateChanged?()
                 }
             }
         }
@@ -660,7 +676,15 @@ class AudioTapManager: NSObject, ObservableObject {
             let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
             let outputs = UnsafeMutableAudioBufferListPointer(outputData)
 
-            guard !inputs.isEmpty && !outputs.isEmpty else { return }
+            guard !outputs.isEmpty else { return }
+            guard !inputs.isEmpty else {
+                for bufIdx in 0..<outputs.count {
+                    if let dst = outputs[bufIdx].mData {
+                        memset(dst, 0, Int(outputs[bufIdx].mDataByteSize))
+                    }
+                }
+                return
+            }
 
             let minBuffers = min(inputs.count, outputs.count)
             var hasActiveAudio = false
@@ -668,16 +692,22 @@ class AudioTapManager: NSObject, ObservableObject {
                 let inputBuf = inputs[bufIdx]
                 let outputBuf = outputs[bufIdx]
 
-                guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self),
-                      let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                guard let dst = outputBuf.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                guard let src = inputBuf.mData?.assumingMemoryBound(to: Float.self) else {
+                    memset(dst, 0, Int(outputBuf.mDataByteSize))
+                    continue
+                }
 
                 let count = Int(min(inputBuf.mDataByteSize, outputBuf.mDataByteSize) / 4)
+                guard count > 0 else {
+                    memset(dst, 0, Int(outputBuf.mDataByteSize))
+                    continue
+                }
 
-                // Silence detection: inspect the first 32 samples with Accelerate max magnitude
+                // Silence detection: inspect buffer samples with Accelerate max magnitude
                 if !hasActiveAudio {
-                    let checkCount = min(count, 32)
                     var maxVal: Float = 0
-                    vDSP_maxmgv(src, 1, &maxVal, vDSP_Length(checkCount))
+                    vDSP_maxmgv(src, 1, &maxVal, vDSP_Length(count))
                     if maxVal > 0.0005 {
                         hasActiveAudio = true
                     }

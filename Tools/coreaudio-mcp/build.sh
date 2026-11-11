@@ -8,6 +8,7 @@ mkdir -p "${BIN_DIR}"
 SWIFT_FILES=$(find "${SCRIPT_DIR}/Sources" -type f -name "*.swift")
 
 swiftc -O \
+  -swift-version 6 -strict-concurrency=complete \
   -target arm64-apple-macos14.2 \
   -framework Foundation \
   ${SWIFT_FILES} \

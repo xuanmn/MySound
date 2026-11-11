@@ -138,7 +138,7 @@ class UpdateManager: ObservableObject {
     private func processUpdate(version: String, downloadUrl: String, manual: Bool) {
         let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         
-        if isVersionNewer(newVersion: version, currentVersion: currentVersion) {
+        if Self.isVersionNewer(newVersion: version, currentVersion: currentVersion) {
             self.isUpdateAvailable = true
             self.latestVersion = version
             self.updateURL = URL(string: downloadUrl)
@@ -153,9 +153,11 @@ class UpdateManager: ObservableObject {
     
     /// Compares two semver strings (e.g. "1.3.1" > "1.3.0" -> true).
     /// Handles differing segment lengths (e.g. "1.3" vs "1.3.0").
-    private func isVersionNewer(newVersion: String, currentVersion: String) -> Bool {
-        let newComponents = newVersion.split(separator: ".").compactMap { Int($0) }
-        let currentComponents = currentVersion.split(separator: ".").compactMap { Int($0) }
+    nonisolated static func isVersionNewer(newVersion: String, currentVersion: String) -> Bool {
+        let cleanNew = newVersion.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+        let cleanCurrent = currentVersion.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+        let newComponents = cleanNew.split(separator: ".").compactMap { Int($0) }
+        let currentComponents = cleanCurrent.split(separator: ".").compactMap { Int($0) }
         
         let maxCount = max(newComponents.count, currentComponents.count)
         for i in 0..<maxCount {
@@ -305,20 +307,19 @@ class UpdateManager: ObservableObject {
                     sleep 0.2
                 done
                 rm -rf \(shellEscape(backupAppPath))
-                if [ -d \(shellEscape(currentAppPath)) ]; then
-                    mv \(shellEscape(currentAppPath)) \(shellEscape(backupAppPath))
-                fi
-                if mv \(shellEscape(newAppPath)) \(shellEscape(currentAppPath)); then
-                    rm -rf \(shellEscape(backupAppPath))
-                    xattr -rd com.apple.quarantine \(shellEscape(currentAppPath)) 2>/dev/null || true
-                    codesign -d --entitlements - \(shellEscape(currentAppPath)) > \(shellEscape(entitlementsTmpPath)) 2>/dev/null || true
-                    if [ -s \(shellEscape(entitlementsTmpPath)) ]; then
-                        codesign --force --deep --sign - --entitlements \(shellEscape(entitlementsTmpPath)) \(shellEscape(currentAppPath)) 2>/dev/null || true
-                    else
-                        codesign --force --deep --sign - \(shellEscape(currentAppPath)) 2>/dev/null || true
+                if [ ! -d \(shellEscape(currentAppPath)) ] || mv \(shellEscape(currentAppPath)) \(shellEscape(backupAppPath)); then
+                    if mv \(shellEscape(newAppPath)) \(shellEscape(currentAppPath)); then
+                        rm -rf \(shellEscape(backupAppPath))
+                        xattr -rd com.apple.quarantine \(shellEscape(currentAppPath)) 2>/dev/null || true
+                        codesign -d --entitlements - --xml \(shellEscape(currentAppPath)) > \(shellEscape(entitlementsTmpPath)) 2>/dev/null || true
+                        if [ -s \(shellEscape(entitlementsTmpPath)) ]; then
+                            codesign --force --deep --sign - --entitlements \(shellEscape(entitlementsTmpPath)) \(shellEscape(currentAppPath)) 2>/dev/null || true
+                        else
+                            codesign --force --deep --sign - \(shellEscape(currentAppPath)) 2>/dev/null || true
+                        fi
+                    elif [ -d \(shellEscape(backupAppPath)) ]; then
+                        mv \(shellEscape(backupAppPath)) \(shellEscape(currentAppPath))
                     fi
-                elif [ -d \(shellEscape(backupAppPath)) ]; then
-                    mv \(shellEscape(backupAppPath)) \(shellEscape(currentAppPath))
                 fi
                 open \(shellEscape(currentAppPath))
                 rm -rf \(shellEscape(tempExtractDir.path))

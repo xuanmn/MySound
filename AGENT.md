@@ -44,7 +44,7 @@ killall MySound 2>/dev/null || true
 ### Testing & Verification
 ```bash
 # Run unit test suite (use -Onone so assert() statements are evaluated)
-swiftc -Onone -o build/test_runner Sources/VolumeStore.swift Tools/test_runner.swift && ./build/test_runner
+swiftc -Onone -swift-version 6 -strict-concurrency=complete -o build/test_runner Sources/VolumeStore.swift Sources/AudioOutputDevice.swift Sources/UpdateManager.swift Tools/test_runner.swift && ./build/test_runner
 ```
 
 ### Debugging & Diagnostics
